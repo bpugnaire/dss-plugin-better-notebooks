@@ -12,7 +12,13 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar" aria-label="Notebook navigation">
+      <aside class="sidebar explorer-view" aria-label="Notebook navigation">
+        <nav class="sidebar-rail" aria-label="Sidebar views">
+          <button class="rail-button active" id="explorer-view-button" title="Notebook explorer" aria-label="Notebook explorer">▱</button>
+          <button class="rail-button" id="outline-view-button" title="Notebook outline" aria-label="Notebook outline">☷</button>
+          <button class="rail-collapse" id="sidebar-collapse-button" title="Collapse sidebar" aria-label="Collapse sidebar">‹</button>
+        </nav>
+        <div class="sidebar-content">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">✦</span>
           <span>better notebooks</span>
@@ -35,7 +41,7 @@
           <div id="open-notebook-list" class="notebook-list"></div>
         </div>
 
-        <div class="sidebar-section">
+        <div class="sidebar-section outline-section">
           <div class="section-label"><span>NOTEBOOK OUTLINE</span><button class="icon-button small" id="outline-toggle" aria-label="Toggle notebook outline">⌄</button></div>
           <div id="outline-list"></div>
         </div>
@@ -43,6 +49,7 @@
         <div class="sidebar-footer">
           <div class="offline-dot"></div>
           <span>Local prototype</span>
+        </div>
         </div>
       </aside>
 

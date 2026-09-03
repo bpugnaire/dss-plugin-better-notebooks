@@ -145,10 +145,10 @@ function renderNotebookNavigation() {
     : state.notebooks.notebooks;
   const openNotebooks = state.notebooks.notebooks.filter(item => item.open);
   const notebookButton = item => `<div class="project-notebook-row ${item.id === state.activeNotebookId ? 'active' : ''}" data-drag-notebook-id="${item.id}" draggable="true"><button class="project-notebook" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button></div>`;
-  const folderTree = state.notebooks.folders.map(folder => `<div class="notebook-folder"><div class="folder-label" data-folder-id="${folder.id}"><span class="folder-icon">▾</span> <strong>${escapeHTML(folder.name)}</strong></div>${state.notebooks.notebooks.filter(item => item.folderId === folder.id).map(notebookButton).join('') || '<span class="empty-folder">Empty</span>'}</div>`).join('');
+  const folderTree = state.notebooks.folders.map(folder => `<div class="notebook-folder"><div class="folder-label" data-folder-id="${folder.id}"><span class="folder-icon">▣</span> <strong>${escapeHTML(folder.name)}</strong></div>${state.notebooks.notebooks.filter(item => item.folderId === folder.id).map(notebookButton).join('') || '<span class="empty-folder">Empty</span>'}</div>`).join('');
   const rootNotebooks = state.notebooks.notebooks.filter(item => !item.folderId).map(notebookButton).join('');
   document.querySelector('#notebook-tree-label').textContent = state.notebookListMode === 'recent' ? 'RECENT NOTEBOOKS' : 'PROJECT NOTEBOOKS';
-  document.querySelector('#notebook-tree').innerHTML = state.notebookListMode === 'recent' ? listedNotebooks.map(notebookButton).join('') : `${folderTree}${rootNotebooks ? `<div class="folder-label root-label" data-folder-id="root"><span class="folder-icon">▾</span> <strong>Root</strong></div>${rootNotebooks}` : ''}`;
+  document.querySelector('#notebook-tree').innerHTML = state.notebookListMode === 'recent' ? listedNotebooks.map(notebookButton).join('') : `${folderTree}${rootNotebooks ? `<div class="folder-label root-label" data-folder-id="root"><span class="folder-icon">▣</span> <strong>Root</strong></div>${rootNotebooks}` : ''}`;
   document.querySelector('#open-notebook-list').innerHTML = openNotebooks.map(item => `<button class="project-notebook ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button>`).join('');
   document.querySelector('#notebook-tabs').innerHTML = openNotebooks.map(item => `<div class="notebook-tab ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><button class="tab-select" aria-label="Open ${escapeHTML(item.name)}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button><button class="close-tab" aria-label="Close ${escapeHTML(item.name)}">×</button></div>`).join('');
   document.querySelector('#project-notebooks-button').classList.toggle('active', state.notebookListMode === 'all');
@@ -177,6 +177,20 @@ function renameActiveNotebook() {
   const commit = () => { const nextName = input.value.trim(); if (nextName) { notebook.name = nextName; notebook.updatedAt = Date.now(); persistNotebooks(); } renderNotebookNavigation(); };
   input.addEventListener('blur', commit, { once: true });
   input.addEventListener('keydown', event => { if (event.key === 'Enter') input.blur(); if (event.key === 'Escape') { input.value = notebook.name; input.blur(); } });
+}
+function renameNotebookInTree(id) {
+  const notebook = state.notebooks.notebooks.find(item => item.id === id); const row = document.querySelector(`[data-drag-notebook-id="${id}"]`); if (!notebook || !row) return;
+  const button = row.querySelector('.project-notebook'); button.innerHTML = `<input class="tree-rename" value="${escapeHTML(notebook.name)}" aria-label="Notebook name" />`;
+  const input = button.querySelector('input'); input.focus(); input.select();
+  const commit = () => { const name = input.value.trim(); if (name) { notebook.name = name; notebook.updatedAt = Date.now(); persistNotebooks(); } renderNotebookNavigation(); };
+  input.addEventListener('blur', commit, { once: true }); input.addEventListener('keydown', event => { if (event.key === 'Enter') input.blur(); if (event.key === 'Escape') { input.value = notebook.name; input.blur(); } });
+}
+function renameFolderInTree(id) {
+  if (id === 'root') return; const folder = state.notebooks.folders.find(item => item.id === id); const label = document.querySelector(`[data-folder-id="${id}"]`); if (!folder || !label) return;
+  label.innerHTML = `<span class="folder-icon">▣</span><input class="tree-rename" value="${escapeHTML(folder.name)}" aria-label="Folder name" />`;
+  const input = label.querySelector('input'); input.focus(); input.select();
+  const commit = () => { const name = input.value.trim(); if (name) { folder.name = name; persistNotebooks(); } renderNotebookNavigation(); };
+  input.addEventListener('blur', commit, { once: true }); input.addEventListener('keydown', event => { if (event.key === 'Enter') input.blur(); if (event.key === 'Escape') { input.value = folder.name; input.blur(); } });
 }
 function copyActiveNotebook() { const source = activeNotebook(); const copy = { ...source, id: crypto.randomUUID(), name: `Copy of ${source.name}`, cells: cloneCells(source.cells), open: true, updatedAt: Date.now() }; state.notebooks.notebooks.push(copy); switchNotebook(copy.id); }
 function deleteActiveNotebook() { const notebook = activeNotebook(); if (!window.confirm(`Delete “${notebook.name}” from this prototype workspace?`)) return; state.notebooks.notebooks = state.notebooks.notebooks.filter(item => item.id !== notebook.id); if (!state.notebooks.notebooks.length) return; const next = state.notebooks.notebooks[0]; state.activeNotebookId = next.id; state.cells = next.cells; state.selected.clear(); state.activeCellId = null; resetHistory(); persistNotebooks(); renderWorkspace(); }
@@ -222,6 +236,7 @@ document.querySelector('#dataset-search').addEventListener('input', event => ren
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
 document.querySelector('#new-notebook-button').addEventListener('click', () => { const number = state.notebooks.notebooks.length + 1; const notebook = { id: crypto.randomUUID(), name: `Untitled notebook ${number}`, language: 'PYTHON', cells: [newCell('python')], open: true, updatedAt: Date.now(), folderId: null }; notebook.cells[0].source = ''; state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = notebook.cells[0].id; resetHistory(); persistNotebooks(); renderWorkspace(); focusCell(notebook.cells[0].id); });
 document.querySelector('#notebook-tree').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
+document.querySelector('#notebook-tree').addEventListener('dblclick', event => { const row = event.target.closest('[data-drag-notebook-id]'); const folder = event.target.closest('[data-folder-id]'); if (row) renameNotebookInTree(row.dataset.dragNotebookId); else if (folder) renameFolderInTree(folder.dataset.folderId); });
 document.querySelector('#notebook-tree').addEventListener('dragstart', event => { const row = event.target.closest('[data-drag-notebook-id]'); if (!row) return; event.dataTransfer.setData('text/plain', row.dataset.dragNotebookId); event.dataTransfer.effectAllowed = 'move'; row.classList.add('dragging'); });
 document.querySelector('#notebook-tree').addEventListener('dragend', () => document.querySelectorAll('.folder-label.drop-target, .project-notebook-row.dragging').forEach(node => node.classList.remove('drop-target', 'dragging')));
 document.querySelector('#notebook-tree').addEventListener('dragover', event => { const folder = event.target.closest('[data-folder-id]'); if (!folder) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; document.querySelectorAll('.folder-label.drop-target').forEach(node => node.classList.remove('drop-target')); folder.classList.add('drop-target'); });
@@ -236,6 +251,9 @@ document.querySelector('#notebook-title').addEventListener('dblclick', renameAct
 document.querySelector('#copy-notebook-button').addEventListener('click', copyActiveNotebook);
 document.querySelector('#delete-notebook-button').addEventListener('click', deleteActiveNotebook);
 document.querySelector('#new-folder-button').addEventListener('click', addFolder);
+document.querySelector('#explorer-view-button').addEventListener('click', () => { document.querySelector('.sidebar').classList.remove('outline-view'); document.querySelector('.sidebar').classList.add('explorer-view'); document.querySelector('#explorer-view-button').classList.add('active'); document.querySelector('#outline-view-button').classList.remove('active'); });
+document.querySelector('#outline-view-button').addEventListener('click', () => { document.querySelector('.sidebar').classList.remove('explorer-view'); document.querySelector('.sidebar').classList.add('outline-view'); document.querySelector('#outline-view-button').classList.add('active'); document.querySelector('#explorer-view-button').classList.remove('active'); });
+document.querySelector('#sidebar-collapse-button').addEventListener('click', () => { document.querySelector('.sidebar').classList.toggle('collapsed'); document.querySelector('.app-shell').classList.toggle('sidebar-collapsed'); });
 const folderModal = document.querySelector('#folder-modal');
 const closeFolderModal = () => { folderModal.classList.add('hidden'); document.querySelector('#folder-form').reset(); };
 document.querySelector('#close-folder-modal').addEventListener('click', closeFolderModal);
