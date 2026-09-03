@@ -25,7 +25,7 @@ const starterCells = [
   { id: crypto.randomUUID(), type: 'python', source: '# Try a quick check\ncustomers.isna().sum().sort_values(ascending=False).head(10)', meta: '' },
 ];
 
-const state = { cells: loadCells(), selected: new Set(), clipboard: [], dragId: null };
+const state = { cells: loadCells(), selected: new Set(), clipboard: [], dragId: null, history: [], historyIndex: -1 };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
 
@@ -33,11 +33,26 @@ function loadCells() {
   try { return JSON.parse(localStorage.getItem('better-notebooks-cells')) || starterCells; }
   catch { return starterCells; }
 }
-function save() {
+function save(recordHistory = true) {
   localStorage.setItem('better-notebooks-cells', JSON.stringify(state.cells));
+  if (recordHistory) {
+    const snapshot = JSON.stringify(state.cells);
+    if (state.history[state.historyIndex] !== snapshot) {
+      state.history.splice(state.historyIndex + 1);
+      state.history.push(snapshot);
+      state.historyIndex = state.history.length - 1;
+    }
+  }
   const status = document.querySelector('#saved-state');
   status.textContent = 'Saved locally';
   setTimeout(() => { status.textContent = 'Saved locally'; }, 400);
+}
+function undo() {
+  if (state.historyIndex <= 0) return;
+  state.historyIndex -= 1;
+  state.cells = JSON.parse(state.history[state.historyIndex]);
+  state.selected.clear();
+  save(false); renderCells();
 }
 function escapeHTML(value) { return value.replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[ch]); }
 function cellIndex(id) { return state.cells.findIndex(cell => cell.id === id); }
@@ -75,9 +90,10 @@ function renderCells() {
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output);
     const meta = node.querySelector('.execution-meta'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
+    node.querySelector('.cell-footer').hidden = !data.meta;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     cellsEl.appendChild(node); autoHeight(textarea);
-    const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<button data-insert-after="${data.id}" title="Add cell here" aria-label="Add cell here">+</button>`; cellsEl.appendChild(gap);
+    const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<button class="insert-trigger" title="Add a cell here" aria-label="Add a cell here">+</button><div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python"><span>+</span> Add code cell</button><button data-insert-after="${data.id}" data-insert-type="markdown"><span>¶</span> Add Markdown cell</button></div>`; cellsEl.appendChild(gap);
   });
   renderToolbar(); renderOutline();
   requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
@@ -109,7 +125,6 @@ cellsEl.addEventListener('change', event => { if (event.target.matches('.cell-ch
 cellsEl.addEventListener('click', event => {
   const cell = event.target.closest('.cell'); if (!cell) return; const id = cell.dataset.id;
   if (event.target.closest('.run-cell')) runCell(id);
-  if (event.target.closest('.insert-below')) insertAfter(id);
   if (event.target.closest('.delete-cell')) { state.selected = new Set([id]); deleteSelected(); }
   if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
   const typeOption = event.target.closest('[data-cell-type]');
@@ -117,7 +132,7 @@ cellsEl.addEventListener('click', event => {
   if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.querySelector('.code-input').classList.add('editing'); cell.querySelector('.code-input').focus(); autoHeight(cell.querySelector('.code-input')); }
 });
 cellsEl.addEventListener('focusout', event => { if (event.target.matches('.code-input.editing')) { event.target.classList.remove('editing'); event.target.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
-cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter); });
+cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter, newCell(button.dataset.insertType)); });
 cellsEl.addEventListener('dragstart', event => { const cell = event.target.closest('.cell'); if (!cell || event.target.closest('textarea')) { event.preventDefault(); return; } state.dragId = cell.dataset.id; cell.classList.add('dragging'); });
 cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell && cell.dataset.id !== state.dragId) cell.classList.add('drop-target'); });
 cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.classList.remove('drop-target'));
@@ -133,8 +148,17 @@ document.querySelector('#outline-list').addEventListener('click', event => docum
 document.querySelector('#dismiss-notice').addEventListener('click', event => event.target.closest('.notice').remove());
 document.querySelector('#batch-toolbar').addEventListener('click', event => { const action = event.target.dataset.batchAction; if (!action) return; if (action === 'run') state.selected.forEach(runCell); if (action === 'duplicate') duplicateSelected(); if (action === 'copy') copySelected(); if (action === 'cut') copySelected(true); if (action === 'delete') deleteSelected(); if (action === 'clear') { state.selected.clear(); renderCells(); } });
 document.querySelector('.workspace').addEventListener('click', event => { if (!state.selected.size || event.target.closest('.cell, button, textarea, input, .batch-toolbar')) return; state.selected.clear(); renderCells(); });
+const settingsModal = document.querySelector('#settings-modal');
+const closeSettings = () => settingsModal.classList.add('hidden');
+document.querySelector('#settings-button').addEventListener('click', () => settingsModal.classList.remove('hidden'));
+document.querySelector('#close-settings').addEventListener('click', closeSettings);
+document.querySelector('#done-settings').addEventListener('click', closeSettings);
+settingsModal.addEventListener('click', event => { if (event.target === settingsModal) closeSettings(); });
 document.addEventListener('keydown', event => {
   const mod = event.metaKey || event.ctrlKey;
+  if (event.key === 'Escape') { closeSettings(); return; }
+  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) { runCell(cell.dataset.id); const next = cell.nextElementSibling?.nextElementSibling; next?.querySelector('.code-input, .markdown-render')?.focus(); } return; }
+  if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); return; }
   if (mod && event.key === 'Enter') { event.preventDefault(); (state.selected.size ? [...state.selected] : [document.activeElement.closest?.('.cell')?.dataset.id]).filter(Boolean).forEach(runCell); }
   if (mod && event.key.toLowerCase() === 'c' && state.selected.size) { event.preventDefault(); copySelected(); }
   if (mod && event.key.toLowerCase() === 'x' && state.selected.size) { event.preventDefault(); copySelected(true); }
@@ -142,4 +166,4 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Backspace' && state.selected.size && !document.activeElement.matches('.code-input')) { event.preventDefault(); deleteSelected(); }
 });
 
-renderDatasets(); renderCells();
+save(); renderDatasets(); renderCells();

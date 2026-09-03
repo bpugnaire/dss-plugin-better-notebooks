@@ -41,7 +41,7 @@
           <div class="crumbs"><span>Projects</span><span>/</span><span>Customer Analytics</span><span>/</span><strong>Explore customer behaviour</strong></div>
           <div class="topbar-actions">
             <span class="saved-state" id="saved-state">Saved locally</span>
-            <button class="button ghost">⚙ Settings</button>
+            <button class="button ghost" id="settings-button">⚙ Settings</button>
             <button class="avatar" aria-label="Profile">BP</button>
           </div>
         </header>
@@ -85,13 +85,29 @@
       <article class="cell">
         <div class="cell-rail"><button class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</button><input class="cell-check" type="checkbox" aria-label="Select cell" /></div>
         <div class="cell-content">
-          <header class="cell-header"><div class="cell-type"><button class="cell-type-selector" title="Change cell type"><span class="cell-language"></span><span class="type-chevron">⌄</span></button><div class="type-options" role="menu"><button data-cell-type="python" role="menuitem"><span>⌘</span> Python</button><button data-cell-type="sql" role="menuitem"><span>▤</span> SQL</button><button data-cell-type="markdown" role="menuitem"><span>¶</span> Markdown</button></div></div><div class="cell-actions"><button class="run-cell" title="Run cell">▶</button><button class="delete-cell icon-delete" title="Delete cell" aria-label="Delete cell">⌫</button><button class="more-cell" title="More actions">•••</button></div></header>
+          <header class="cell-header"><div class="cell-type"><button class="cell-type-selector" title="Change cell type"><span class="cell-language"></span><span class="type-chevron">⌄</span></button><div class="type-options" role="menu"><button data-cell-type="python" role="menuitem"><span>⌘</span> Python</button><button data-cell-type="sql" role="menuitem"><span>▤</span> SQL</button><button data-cell-type="markdown" role="menuitem"><span>¶</span> Markdown</button></div></div><div class="cell-actions"><button class="run-cell" title="Run cell">▶</button><button class="delete-cell icon-delete" title="Delete cell" aria-label="Delete cell">🗑</button><button class="more-cell" title="More actions">•••</button></div></header>
           <textarea class="code-input" spellcheck="false" aria-label="Cell code"></textarea>
           <div class="cell-output"></div>
-          <div class="cell-footer"><span class="execution-meta"></span><div class="cell-footer-actions"><button class="insert-below">+ Add below</button><button class="delete-cell">Delete</button></div></div>
+          <div class="cell-footer"><span class="execution-meta"></span></div>
         </div>
       </article>
     </template>
+    <div class="modal-backdrop hidden" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <section class="settings-modal-card">
+        <header><div><span class="eyebrow">NOTEBOOK SETTINGS</span><h2 id="settings-title">Keyboard shortcuts</h2></div><button class="icon-button" id="close-settings" aria-label="Close settings">×</button></header>
+        <p>Use familiar notebook shortcuts to stay in flow.</p>
+        <div class="shortcut-grid">
+          <div><span>Run current cell</span><kbd>⇧</kbd><kbd>↵</kbd></div>
+          <div><span>Run cell / selection</span><kbd>⌘</kbd><kbd>↵</kbd></div>
+          <div><span>Undo cell change</span><kbd>⌘</kbd><kbd>Z</kbd></div>
+          <div><span>Copy selected cells</span><kbd>⌘</kbd><kbd>C</kbd></div>
+          <div><span>Cut selected cells</span><kbd>⌘</kbd><kbd>X</kbd></div>
+          <div><span>Paste copied cells</span><kbd>⌘</kbd><kbd>V</kbd></div>
+          <div><span>Delete selected cells</span><kbd>⌫</kbd></div>
+        </div>
+        <footer><button class="button primary" id="done-settings">Done</button></footer>
+      </section>
+    </div>
     <script src="app.js"></script>
   </body>
 </html>
