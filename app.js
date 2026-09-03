@@ -25,7 +25,7 @@ const starterCells = [
   { id: crypto.randomUUID(), type: 'python', source: '# Try a quick check\ncustomers.isna().sum().sort_values(ascending=False).head(10)', meta: '' },
 ];
 
-const state = { cells: loadCells(), selected: new Set(), clipboard: [], dragId: null, history: [], historyIndex: -1 };
+const state = { cells: loadCells(), selected: new Set(), clipboard: [], dragId: null, activeCellId: null, history: [], historyIndex: -1 };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
 
@@ -84,11 +84,12 @@ function renderCells() {
     const node = template.content.firstElementChild.cloneNode(true);
     node.dataset.id = data.id; node.dataset.type = data.type; node.draggable = true;
     if (state.selected.has(data.id)) node.classList.add('selected');
+    if (state.activeCellId === data.id) node.classList.add('active');
     const language = node.querySelector('.cell-language'); language.classList.add(data.type);
     const textarea = node.querySelector('.code-input'); textarea.value = data.source;
     textarea.placeholder = data.type === 'markdown' ? 'Write Markdown' : data.type === 'sql' ? 'Write SQL' : 'Write Python';
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
-    node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output);
+    node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output);
     const meta = node.querySelector('.execution-meta'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
     node.querySelector('.cell-footer').hidden = !data.meta;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
@@ -109,7 +110,8 @@ function renderOutline() {
 function updateCell(id, patch) { Object.assign(getCell(id), patch); save(); renderOutline(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
 function focusCell(id) { requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] .code-input`)?.focus()); }
-function runCell(id) { const cell = getCell(id); cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : cell.type === 'markdown' ? '' : 'table'; save(); renderCells(); }
+function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
+function runCell(id) { const cell = getCell(id); state.activeCellId = id; cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : cell.type === 'markdown' ? '' : 'table'; save(); renderCells(); }
 function selectCell(id, selected) { selected ? state.selected.add(id) : state.selected.delete(id); renderCells(); }
 function duplicateSelected() { const selection = state.cells.filter(cell => state.selected.has(cell.id)); if (!selection.length) return; const last = Math.max(...selection.map(cell => cellIndex(cell.id))); const copies = selection.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); state.cells.splice(last + 1, 0, ...copies); state.selected = new Set(copies.map(cell => cell.id)); save(); renderCells(); }
 function copySelected(remove = false) { const selected = state.cells.filter(cell => state.selected.has(cell.id)); if (!selected.length) return; state.clipboard = selected.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); if (remove) { state.cells = state.cells.filter(cell => !state.selected.has(cell.id)); state.selected.clear(); } save(); renderCells(); }
@@ -124,6 +126,7 @@ cellsEl.addEventListener('input', event => {
 cellsEl.addEventListener('change', event => { if (event.target.matches('.cell-check')) selectCell(event.target.closest('.cell').dataset.id, event.target.checked); });
 cellsEl.addEventListener('click', event => {
   const cell = event.target.closest('.cell'); if (!cell) return; const id = cell.dataset.id;
+  setActiveCell(id);
   if (event.target.closest('.run-cell')) runCell(id);
   if (event.target.closest('.delete-cell')) { state.selected = new Set([id]); deleteSelected(); }
   if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
@@ -131,6 +134,7 @@ cellsEl.addEventListener('click', event => {
   if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); renderCells(); }
   if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.querySelector('.code-input').classList.add('editing'); cell.querySelector('.code-input').focus(); autoHeight(cell.querySelector('.code-input')); }
 });
+cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
 cellsEl.addEventListener('focusout', event => { if (event.target.matches('.code-input.editing')) { event.target.classList.remove('editing'); event.target.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
 cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter, newCell(button.dataset.insertType)); });
 cellsEl.addEventListener('dragstart', event => { const cell = event.target.closest('.cell'); if (!cell || event.target.closest('textarea')) { event.preventDefault(); return; } state.dragId = cell.dataset.id; cell.classList.add('dragging'); });
@@ -157,7 +161,7 @@ settingsModal.addEventListener('click', event => { if (event.target === settings
 document.addEventListener('keydown', event => {
   const mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape') { closeSettings(); return; }
-  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) { runCell(cell.dataset.id); const next = cell.nextElementSibling?.nextElementSibling; next?.querySelector('.code-input, .markdown-render')?.focus(); } return; }
+  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) { const nextId = state.cells[cellIndex(cell.dataset.id) + 1]?.id; runCell(cell.dataset.id); if (nextId) requestAnimationFrame(() => { setActiveCell(nextId); document.querySelector(`[data-id="${nextId}"] .code-input, [data-id="${nextId}"] .markdown-render`)?.focus(); }); } return; }
   if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); return; }
   if (mod && event.key === 'Enter') { event.preventDefault(); (state.selected.size ? [...state.selected] : [document.activeElement.closest?.('.cell')?.dataset.id]).filter(Boolean).forEach(runCell); }
   if (mod && event.key.toLowerCase() === 'c' && state.selected.size) { event.preventDefault(); copySelected(); }

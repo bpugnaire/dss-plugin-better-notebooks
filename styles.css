@@ -35,6 +35,7 @@ button { cursor: pointer; }
 
 /* Databricks-inspired cell chrome */
 .cell { margin-top:10px; margin-bottom:0; }
+.cell.active .cell-content { border-color:#8c73ee; box-shadow:0 0 0 2px rgba(107,76,230,.14); }.cell.active .cell-header { background:#f1eff8; }
 .cell-content { background:#f4f3f5; border-color:#d9d6dc; border-radius:5px; overflow:visible; }
 .cell-header { height:29px; padding:0 8px 0 10px; background:#f4f3f5; border-bottom-color:#dddadf; border-radius:5px 5px 0 0; }
 .cell-type { position:relative; }
