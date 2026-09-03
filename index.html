@@ -12,26 +12,22 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar" aria-label="Project datasets">
+      <aside class="sidebar" aria-label="Notebook navigation">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">✦</span>
           <span>better notebooks</span>
         </div>
 
-        <button class="new-button" id="add-cell-button"><span>+</span> New cell</button>
+        <button class="new-button" id="new-notebook-button"><span>+</span> New notebook</button>
 
         <nav class="sidebar-nav" aria-label="Notebook navigation">
-          <button class="nav-item active"><span>▣</span> Notebook</button>
+          <button class="nav-item active"><span>▣</span> Notebooks</button>
           <button class="nav-item"><span>◫</span> Recents</button>
         </nav>
 
         <div class="sidebar-section">
-          <div class="section-label"><span>PROJECT DATASETS</span><button class="icon-button small" aria-label="Refresh datasets">↻</button></div>
-          <label class="dataset-search">
-            <span>⌕</span>
-            <input id="dataset-search" type="search" placeholder="Search datasets" />
-          </label>
-          <div id="dataset-list" class="dataset-list"></div>
+          <div class="section-label"><span>NOTEBOOK OUTLINE</span><button class="icon-button small" id="outline-toggle" aria-label="Toggle notebook outline">⌄</button></div>
+          <div id="outline-list"></div>
         </div>
 
         <div class="sidebar-footer">
@@ -45,21 +41,19 @@
           <div class="crumbs"><span>Projects</span><span>/</span><span>Customer Analytics</span><span>/</span><strong>Explore customer behaviour</strong></div>
           <div class="topbar-actions">
             <span class="saved-state" id="saved-state">Saved locally</span>
-            <button class="button ghost" id="clear-selection">Clear selection</button>
-            <button class="button primary" id="run-all"><span>▶</span> Run all</button>
+            <button class="button ghost">⚙ Settings</button>
             <button class="avatar" aria-label="Profile">BP</button>
           </div>
         </header>
 
         <section class="notebook-head">
           <div>
-            <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill">● Idle</span></div>
+            <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill">● Idle</span><button class="executor-selector" id="executor-selector">Python 3.11 <span>⌄</span></button><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
             <h1>Explore customer behaviour</h1>
             <p>Prototype notebook · Local state only</p>
           </div>
           <div class="head-actions">
-            <button class="button ghost" id="toggle-outline">☷ Outline</button>
-            <button class="button ghost">⚙ Settings</button>
+            <button class="button primary" id="run-all"><span>▶</span> Run all</button>
           </div>
         </section>
 
@@ -73,16 +67,18 @@
           <button data-batch-action="copy">▣ Copy</button>
           <button data-batch-action="cut">✂ Cut</button>
           <button data-batch-action="delete" class="danger">⌫ Delete</button>
+          <button data-batch-action="clear">Clear selection</button>
         </section>
 
         <section id="cells" class="cells" aria-label="Notebook cells"></section>
         <button class="add-cell-row" id="add-cell-row"><span>+</span> Add cell</button>
       </main>
 
-      <aside class="outline-panel" id="outline-panel">
-        <div class="outline-title"><span>Notebook outline</span><button class="icon-button" id="close-outline" aria-label="Close outline">×</button></div>
-        <div id="outline-list"></div>
-        <div class="shortcut-card"><strong>Keyboard shortcuts</strong><span><kbd>⌘</kbd> <kbd>↵</kbd> run cell</span><span><kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>↵</kbd> run selection</span><span><kbd>⌘</kbd> <kbd>C</kbd> copy selected cells</span><span><kbd>⌘</kbd> <kbd>V</kbd> paste cells</span></div>
+      <aside class="data-panel" aria-label="Project datasets">
+        <div class="data-panel-title"><span>PROJECT DATASETS</span><button class="icon-button small" aria-label="Refresh datasets">↻</button></div>
+        <label class="dataset-search"><span>⌕</span><input id="dataset-search" type="search" placeholder="Search datasets" /></label>
+        <div id="dataset-list" class="dataset-list"></div>
+        <div class="dataset-hint"><strong>Tip</strong><span>Click a dataset to add its Dataiku loading snippet to the notebook.</span></div>
       </aside>
     </div>
     <template id="cell-template">

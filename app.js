@@ -124,17 +124,15 @@ cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.cl
 cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCell(state.dragId, cell.dataset.id); });
 cellsEl.addEventListener('dragend', () => { state.dragId = null; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target')); });
 
-document.querySelector('#add-cell-button').addEventListener('click', () => { const cell = newCell(); state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
-document.querySelector('#add-cell-row').addEventListener('click', () => document.querySelector('#add-cell-button').click());
+document.querySelector('#add-cell-row').addEventListener('click', () => { const cell = newCell(); state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
 document.querySelector('#run-all').addEventListener('click', () => { state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells(); });
-document.querySelector('#clear-selection').addEventListener('click', () => { state.selected.clear(); renderCells(); });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
-document.querySelector('#toggle-outline').addEventListener('click', () => document.querySelector('.app-shell').classList.toggle('outline-open'));
-document.querySelector('#close-outline').addEventListener('click', () => document.querySelector('.app-shell').classList.remove('outline-open'));
+document.querySelector('#outline-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('outline-collapsed'));
 document.querySelector('#outline-list').addEventListener('click', event => document.querySelector(`[data-id="${event.target.closest('[data-outline-id]')?.dataset.outlineId}"]`)?.scrollIntoView({ behavior:'smooth', block:'center' }));
 document.querySelector('#dismiss-notice').addEventListener('click', event => event.target.closest('.notice').remove());
-document.querySelector('#batch-toolbar').addEventListener('click', event => { const action = event.target.dataset.batchAction; if (!action) return; if (action === 'run') state.selected.forEach(runCell); if (action === 'duplicate') duplicateSelected(); if (action === 'copy') copySelected(); if (action === 'cut') copySelected(true); if (action === 'delete') deleteSelected(); });
+document.querySelector('#batch-toolbar').addEventListener('click', event => { const action = event.target.dataset.batchAction; if (!action) return; if (action === 'run') state.selected.forEach(runCell); if (action === 'duplicate') duplicateSelected(); if (action === 'copy') copySelected(); if (action === 'cut') copySelected(true); if (action === 'delete') deleteSelected(); if (action === 'clear') { state.selected.clear(); renderCells(); } });
+document.querySelector('.workspace').addEventListener('click', event => { if (!state.selected.size || event.target.closest('.cell, button, textarea, input, .batch-toolbar')) return; state.selected.clear(); renderCells(); });
 document.addEventListener('keydown', event => {
   const mod = event.metaKey || event.ctrlKey;
   if (mod && event.key === 'Enter') { event.preventDefault(); (state.selected.size ? [...state.selected] : [document.activeElement.closest?.('.cell')?.dataset.id]).filter(Boolean).forEach(runCell); }
