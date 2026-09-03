@@ -37,14 +37,15 @@ function cloneCells(cells) { return cells.map(cell => ({ ...cell, id: crypto.ran
 function loadNotebooks() {
   try {
     const saved = JSON.parse(localStorage.getItem('better-notebooks-notebooks'));
-    if (saved?.notebooks?.length) return { ...saved, notebooks: saved.notebooks.map(notebook => ({ ...notebook, open: notebook.open ?? true, updatedAt: notebook.updatedAt ?? 0 })) };
+    if (saved?.notebooks?.length) return { ...saved, folders: saved.folders ?? [], notebooks: saved.notebooks.map(notebook => ({ ...notebook, open: notebook.open ?? true, updatedAt: notebook.updatedAt ?? 0, folderId: notebook.folderId ?? null })) };
   } catch { /* Start from the browser-only prototype notebook. */ }
   return {
     activeNotebookId: 'customer-behaviour',
+    folders: [{ id: 'analysis', name: 'Analysis' }, { id: 'quality', name: 'Data quality' }],
     notebooks: [
-      { id: 'customer-behaviour', name: 'Explore customer behaviour', language: 'PYTHON', cells: loadCells(), open: true, updatedAt: 3 },
-      { id: 'revenue-check', name: 'Revenue quality checks', language: 'SQL', cells: cloneCells(starterCells).slice(1, 3), open: true, updatedAt: 2 },
-      { id: 'retention-analysis', name: 'Retention analysis', language: 'PYTHON', cells: cloneCells(starterCells).slice(0, 2), open: true, updatedAt: 1 },
+      { id: 'customer-behaviour', name: 'Explore customer behaviour', language: 'PYTHON', cells: loadCells(), open: true, updatedAt: 3, folderId: 'analysis' },
+      { id: 'revenue-check', name: 'Revenue quality checks', language: 'SQL', cells: cloneCells(starterCells).slice(1, 3), open: true, updatedAt: 2, folderId: 'quality' },
+      { id: 'retention-analysis', name: 'Retention analysis', language: 'PYTHON', cells: cloneCells(starterCells).slice(0, 2), open: true, updatedAt: 1, folderId: 'analysis' },
     ]
   };
 }
@@ -143,7 +144,12 @@ function renderNotebookNavigation() {
     ? [...state.notebooks.notebooks].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3)
     : state.notebooks.notebooks;
   const openNotebooks = state.notebooks.notebooks.filter(item => item.open);
-  document.querySelector('#notebook-list').innerHTML = listedNotebooks.map(item => `<button class="project-notebook ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button>`).join('');
+  const notebookButton = item => `<div class="project-notebook-row ${item.id === state.activeNotebookId ? 'active' : ''}"><button class="project-notebook" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button><button class="move-notebook" data-move-notebook-id="${item.id}" title="Move to folder" aria-label="Move ${escapeHTML(item.name)} to folder">↳</button></div>`;
+  const folderTree = state.notebooks.folders.map(folder => `<div class="notebook-folder"><div class="folder-label"><span>⌄</span> <strong>${escapeHTML(folder.name)}</strong></div>${state.notebooks.notebooks.filter(item => item.folderId === folder.id).map(notebookButton).join('') || '<span class="empty-folder">Empty</span>'}</div>`).join('');
+  const rootNotebooks = state.notebooks.notebooks.filter(item => !item.folderId).map(notebookButton).join('');
+  document.querySelector('#notebook-tree-label').textContent = state.notebookListMode === 'recent' ? 'RECENT NOTEBOOKS' : 'PROJECT NOTEBOOKS';
+  document.querySelector('#notebook-tree').innerHTML = state.notebookListMode === 'recent' ? listedNotebooks.map(notebookButton).join('') : `${folderTree}${rootNotebooks ? `<div class="folder-label root-label"><span>⌄</span> <strong>Root</strong></div>${rootNotebooks}` : ''}`;
+  document.querySelector('#open-notebook-list').innerHTML = openNotebooks.map(item => `<button class="project-notebook ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button>`).join('');
   document.querySelector('#notebook-tabs').innerHTML = openNotebooks.map(item => `<div class="notebook-tab ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><button class="tab-select" aria-label="Open ${escapeHTML(item.name)}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button><button class="close-tab" aria-label="Close ${escapeHTML(item.name)}">×</button></div>`).join('');
   document.querySelector('#project-notebooks-button').classList.toggle('active', state.notebookListMode === 'all');
   document.querySelector('#recents-button').classList.toggle('active', state.notebookListMode === 'recent');
@@ -163,6 +169,19 @@ function closeNotebook(id) {
   }
   persistNotebooks(); renderWorkspace();
 }
+function renameActiveNotebook() {
+  const title = document.querySelector('#notebook-title'); const notebook = activeNotebook();
+  if (title.querySelector('input')) return;
+  title.innerHTML = `<input id="notebook-rename-input" value="${escapeHTML(notebook.name)}" aria-label="Notebook name" />`;
+  const input = title.querySelector('input'); input.focus(); input.select();
+  const commit = () => { const nextName = input.value.trim(); if (nextName) { notebook.name = nextName; notebook.updatedAt = Date.now(); persistNotebooks(); } renderNotebookNavigation(); };
+  input.addEventListener('blur', commit, { once: true });
+  input.addEventListener('keydown', event => { if (event.key === 'Enter') input.blur(); if (event.key === 'Escape') { input.value = notebook.name; input.blur(); } });
+}
+function copyActiveNotebook() { const source = activeNotebook(); const copy = { ...source, id: crypto.randomUUID(), name: `Copy of ${source.name}`, cells: cloneCells(source.cells), open: true, updatedAt: Date.now() }; state.notebooks.notebooks.push(copy); switchNotebook(copy.id); }
+function deleteActiveNotebook() { const notebook = activeNotebook(); if (!window.confirm(`Delete “${notebook.name}” from this prototype workspace?`)) return; state.notebooks.notebooks = state.notebooks.notebooks.filter(item => item.id !== notebook.id); if (!state.notebooks.notebooks.length) return; const next = state.notebooks.notebooks[0]; state.activeNotebookId = next.id; state.cells = next.cells; state.selected.clear(); state.activeCellId = null; resetHistory(); persistNotebooks(); renderWorkspace(); }
+function addFolder() { const number = state.notebooks.folders.length + 1; state.notebooks.folders.push({ id: crypto.randomUUID(), name: `New folder ${number}` }); persistNotebooks(); renderNotebookNavigation(); }
+function moveNotebook(id) { const notebook = state.notebooks.notebooks.find(item => item.id === id); if (!notebook) return; const options = ['Root', ...state.notebooks.folders.map(folder => folder.name)]; const selected = window.prompt(`Move “${notebook.name}” to a folder:\n${options.join('\n')}`, notebook.folderId ? state.notebooks.folders.find(folder => folder.id === notebook.folderId)?.name : 'Root'); if (selected === null) return; const folder = state.notebooks.folders.find(item => item.name.toLowerCase() === selected.trim().toLowerCase()); if (selected.trim().toLowerCase() === 'root' || folder) { notebook.folderId = folder?.id ?? null; notebook.updatedAt = Date.now(); persistNotebooks(); renderNotebookNavigation(); } }
 function updateCell(id, patch) { Object.assign(getCell(id), patch); save(); renderOutline(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
 function focusCell(id, preventScroll = false) { requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] .code-input`)?.focus({ preventScroll })); }
@@ -202,11 +221,17 @@ cellsEl.addEventListener('dragend', () => { state.dragId = null; document.queryS
 document.querySelector('#run-all').addEventListener('click', () => { state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells(); });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
-document.querySelector('#new-notebook-button').addEventListener('click', () => { const number = state.notebooks.notebooks.length + 1; const notebook = { id: crypto.randomUUID(), name: `Untitled notebook ${number}`, language: 'PYTHON', cells: [newCell('python')], open: true, updatedAt: Date.now() }; notebook.cells[0].source = ''; state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = notebook.cells[0].id; resetHistory(); persistNotebooks(); renderWorkspace(); focusCell(notebook.cells[0].id); });
-document.querySelector('#notebook-list').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
+document.querySelector('#new-notebook-button').addEventListener('click', () => { const number = state.notebooks.notebooks.length + 1; const notebook = { id: crypto.randomUUID(), name: `Untitled notebook ${number}`, language: 'PYTHON', cells: [newCell('python')], open: true, updatedAt: Date.now(), folderId: null }; notebook.cells[0].source = ''; state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = notebook.cells[0].id; resetHistory(); persistNotebooks(); renderWorkspace(); focusCell(notebook.cells[0].id); });
+document.querySelector('#notebook-tree').addEventListener('click', event => { const move = event.target.closest('[data-move-notebook-id]'); if (move) { moveNotebook(move.dataset.moveNotebookId); return; } const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
+document.querySelector('#open-notebook-list').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
 document.querySelector('#notebook-tabs').addEventListener('click', event => { const close = event.target.closest('.close-tab'); if (close) { closeNotebook(close.closest('[data-notebook-id]').dataset.notebookId); return; } const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
 document.querySelector('#project-notebooks-button').addEventListener('click', () => { state.notebookListMode = 'all'; renderNotebookNavigation(); });
 document.querySelector('#recents-button').addEventListener('click', () => { state.notebookListMode = 'recent'; renderNotebookNavigation(); });
+document.querySelector('#rename-notebook-button').addEventListener('click', renameActiveNotebook);
+document.querySelector('#notebook-title').addEventListener('dblclick', renameActiveNotebook);
+document.querySelector('#copy-notebook-button').addEventListener('click', copyActiveNotebook);
+document.querySelector('#delete-notebook-button').addEventListener('click', deleteActiveNotebook);
+document.querySelector('#new-folder-button').addEventListener('click', addFolder);
 document.querySelector('#outline-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('outline-collapsed'));
 document.querySelector('#outline-list').addEventListener('click', event => document.querySelector(`[data-id="${event.target.closest('[data-outline-id]')?.dataset.outlineId}"]`)?.scrollIntoView({ behavior:'smooth', block:'center' }));
 document.querySelector('#dismiss-notice').addEventListener('click', event => event.target.closest('.notice').remove());

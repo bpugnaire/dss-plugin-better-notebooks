@@ -25,9 +25,14 @@
           <button class="nav-item" id="recents-button"><span>◫</span> Recents</button>
         </nav>
 
+        <div class="sidebar-section explorer-section">
+          <div class="section-label"><span id="notebook-tree-label">PROJECT NOTEBOOKS</span><div class="explorer-actions"><button class="icon-button small" id="new-folder-button" title="New theoretical folder" aria-label="New folder">▱+</button><button class="icon-button small" id="copy-notebook-button" title="Copy active notebook" aria-label="Copy active notebook">⧉</button><button class="icon-button small" id="delete-notebook-button" title="Delete active notebook" aria-label="Delete active notebook">⌫</button></div></div>
+          <div id="notebook-tree" class="notebook-list"></div>
+        </div>
+
         <div class="sidebar-section open-notebooks-section">
           <div class="section-label"><span>OPEN NOTEBOOKS</span></div>
-          <div id="notebook-list" class="notebook-list"></div>
+          <div id="open-notebook-list" class="notebook-list"></div>
         </div>
 
         <div class="sidebar-section">
@@ -55,7 +60,7 @@
         <section class="notebook-head">
           <div>
             <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill">● Idle</span><button class="executor-selector" id="executor-selector">Python 3.11 <span>⌄</span></button><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
-            <h1 id="notebook-title">Explore customer behaviour</h1>
+            <h1 class="notebook-title-row"><span id="notebook-title" tabindex="0" title="Double-click to rename">Explore customer behaviour</span><button class="rename-notebook" id="rename-notebook-button" title="Rename notebook" aria-label="Rename notebook">✎</button></h1>
             <p>Prototype notebook · Local state only</p>
           </div>
           <div class="head-actions">
