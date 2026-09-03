@@ -25,7 +25,7 @@ const starterCells = [
   { id: crypto.randomUUID(), type: 'python', source: '# Try a quick check\ncustomers.isna().sum().sort_values(ascending=False).head(10)', meta: '' },
 ];
 
-const state = { notebooks: loadNotebooks(), activeNotebookId: null, cells: [], selected: new Set(), clipboard: [], dragId: null, activeCellId: null, history: [], historyIndex: -1 };
+const state = { notebooks: loadNotebooks(), activeNotebookId: null, notebookListMode: 'all', cells: [], selected: new Set(), clipboard: [], dragId: null, activeCellId: null, history: [], historyIndex: -1 };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
 
@@ -37,14 +37,14 @@ function cloneCells(cells) { return cells.map(cell => ({ ...cell, id: crypto.ran
 function loadNotebooks() {
   try {
     const saved = JSON.parse(localStorage.getItem('better-notebooks-notebooks'));
-    if (saved?.notebooks?.length) return saved;
+    if (saved?.notebooks?.length) return { ...saved, notebooks: saved.notebooks.map(notebook => ({ ...notebook, open: notebook.open ?? true, updatedAt: notebook.updatedAt ?? 0 })) };
   } catch { /* Start from the browser-only prototype notebook. */ }
   return {
     activeNotebookId: 'customer-behaviour',
     notebooks: [
-      { id: 'customer-behaviour', name: 'Explore customer behaviour', language: 'PYTHON', cells: loadCells() },
-      { id: 'revenue-check', name: 'Revenue quality checks', language: 'SQL', cells: cloneCells(starterCells).slice(1, 3) },
-      { id: 'retention-analysis', name: 'Retention analysis', language: 'PYTHON', cells: cloneCells(starterCells).slice(0, 2) },
+      { id: 'customer-behaviour', name: 'Explore customer behaviour', language: 'PYTHON', cells: loadCells(), open: true, updatedAt: 3 },
+      { id: 'revenue-check', name: 'Revenue quality checks', language: 'SQL', cells: cloneCells(starterCells).slice(1, 3), open: true, updatedAt: 2 },
+      { id: 'retention-analysis', name: 'Retention analysis', language: 'PYTHON', cells: cloneCells(starterCells).slice(0, 2), open: true, updatedAt: 1 },
     ]
   };
 }
@@ -52,11 +52,11 @@ function activeNotebook() { return state.notebooks.notebooks.find(notebook => no
 function resetHistory() { state.history = [JSON.stringify(state.cells)]; state.historyIndex = 0; }
 function switchNotebook(id) {
   const notebook = state.notebooks.notebooks.find(item => item.id === id); if (!notebook || id === state.activeNotebookId) return;
-  state.activeNotebookId = id; state.notebooks.activeNotebookId = id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = null; resetHistory(); persistNotebooks(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'instant' });
+  notebook.open = true; state.activeNotebookId = id; state.notebooks.activeNotebookId = id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = null; resetHistory(); persistNotebooks(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'instant' });
 }
 function persistNotebooks() { localStorage.setItem('better-notebooks-notebooks', JSON.stringify(state.notebooks)); }
 function save(recordHistory = true) {
-  activeNotebook().cells = state.cells; state.notebooks.activeNotebookId = state.activeNotebookId; persistNotebooks();
+  activeNotebook().cells = state.cells; activeNotebook().updatedAt = Date.now(); state.notebooks.activeNotebookId = state.activeNotebookId; persistNotebooks();
   if (recordHistory) {
     const snapshot = JSON.stringify(state.cells);
     if (state.history[state.historyIndex] !== snapshot) {
@@ -139,13 +139,30 @@ function renderOutline() {
 }
 function renderNotebookNavigation() {
   const notebook = activeNotebook();
-  document.querySelector('#notebook-list').innerHTML = state.notebooks.notebooks.map(item => `<button class="project-notebook ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button>`).join('');
-  document.querySelector('#notebook-tabs').innerHTML = state.notebooks.notebooks.map(item => `<button class="notebook-tab ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button>`).join('');
+  const listedNotebooks = state.notebookListMode === 'recent'
+    ? [...state.notebooks.notebooks].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3)
+    : state.notebooks.notebooks;
+  const openNotebooks = state.notebooks.notebooks.filter(item => item.open);
+  document.querySelector('#notebook-list').innerHTML = listedNotebooks.map(item => `<button class="project-notebook ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button>`).join('');
+  document.querySelector('#notebook-tabs').innerHTML = openNotebooks.map(item => `<div class="notebook-tab ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><button class="tab-select" aria-label="Open ${escapeHTML(item.name)}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button><button class="close-tab" aria-label="Close ${escapeHTML(item.name)}">×</button></div>`).join('');
+  document.querySelector('#project-notebooks-button').classList.toggle('active', state.notebookListMode === 'all');
+  document.querySelector('#recents-button').classList.toggle('active', state.notebookListMode === 'recent');
   document.querySelector('#notebook-title').textContent = notebook.name;
   document.querySelector('#crumb-notebook-name').textContent = notebook.name;
   document.querySelector('.notebook-head .eyebrow').firstChild.textContent = `${notebook.language} NOTEBOOK `;
 }
 function renderWorkspace() { renderNotebookNavigation(); renderDatasets(); renderCells(); }
+function closeNotebook(id) {
+  const openNotebooks = state.notebooks.notebooks.filter(item => item.open);
+  if (openNotebooks.length === 1) return;
+  const notebook = state.notebooks.notebooks.find(item => item.id === id); if (!notebook) return;
+  notebook.open = false;
+  if (id === state.activeNotebookId) {
+    const next = openNotebooks.find(item => item.id !== id);
+    state.activeNotebookId = next.id; state.notebooks.activeNotebookId = next.id; state.cells = next.cells; state.selected.clear(); state.activeCellId = null; resetHistory();
+  }
+  persistNotebooks(); renderWorkspace();
+}
 function updateCell(id, patch) { Object.assign(getCell(id), patch); save(); renderOutline(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
 function focusCell(id, preventScroll = false) { requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] .code-input`)?.focus({ preventScroll })); }
@@ -185,9 +202,11 @@ cellsEl.addEventListener('dragend', () => { state.dragId = null; document.queryS
 document.querySelector('#run-all').addEventListener('click', () => { state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells(); });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
-document.querySelector('#new-notebook-button').addEventListener('click', () => { const number = state.notebooks.notebooks.length + 1; const notebook = { id: crypto.randomUUID(), name: `Untitled notebook ${number}`, language: 'PYTHON', cells: [newCell('python')] }; notebook.cells[0].source = ''; state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = notebook.cells[0].id; resetHistory(); persistNotebooks(); renderWorkspace(); focusCell(notebook.cells[0].id); });
+document.querySelector('#new-notebook-button').addEventListener('click', () => { const number = state.notebooks.notebooks.length + 1; const notebook = { id: crypto.randomUUID(), name: `Untitled notebook ${number}`, language: 'PYTHON', cells: [newCell('python')], open: true, updatedAt: Date.now() }; notebook.cells[0].source = ''; state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = notebook.cells[0].id; resetHistory(); persistNotebooks(); renderWorkspace(); focusCell(notebook.cells[0].id); });
 document.querySelector('#notebook-list').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
-document.querySelector('#notebook-tabs').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
+document.querySelector('#notebook-tabs').addEventListener('click', event => { const close = event.target.closest('.close-tab'); if (close) { closeNotebook(close.closest('[data-notebook-id]').dataset.notebookId); return; } const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
+document.querySelector('#project-notebooks-button').addEventListener('click', () => { state.notebookListMode = 'all'; renderNotebookNavigation(); });
+document.querySelector('#recents-button').addEventListener('click', () => { state.notebookListMode = 'recent'; renderNotebookNavigation(); });
 document.querySelector('#outline-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('outline-collapsed'));
 document.querySelector('#outline-list').addEventListener('click', event => document.querySelector(`[data-id="${event.target.closest('[data-outline-id]')?.dataset.outlineId}"]`)?.scrollIntoView({ behavior:'smooth', block:'center' }));
 document.querySelector('#dismiss-notice').addEventListener('click', event => event.target.closest('.notice').remove());
