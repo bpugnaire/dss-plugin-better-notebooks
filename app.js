@@ -25,7 +25,7 @@ const starterCells = [
   { id: crypto.randomUUID(), type: 'python', source: '# Try a quick check\ncustomers.isna().sum().sort_values(ascending=False).head(10)', meta: '' },
 ];
 
-const state = { cells: loadCells(), selected: new Set(), clipboard: [], dragId: null, activeCellId: null, history: [], historyIndex: -1 };
+const state = { notebooks: loadNotebooks(), activeNotebookId: null, cells: [], selected: new Set(), clipboard: [], dragId: null, activeCellId: null, history: [], historyIndex: -1 };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
 
@@ -33,8 +33,30 @@ function loadCells() {
   try { return JSON.parse(localStorage.getItem('better-notebooks-cells')) || starterCells; }
   catch { return starterCells; }
 }
+function cloneCells(cells) { return cells.map(cell => ({ ...cell, id: crypto.randomUUID() })); }
+function loadNotebooks() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('better-notebooks-notebooks'));
+    if (saved?.notebooks?.length) return saved;
+  } catch { /* Start from the browser-only prototype notebook. */ }
+  return {
+    activeNotebookId: 'customer-behaviour',
+    notebooks: [
+      { id: 'customer-behaviour', name: 'Explore customer behaviour', language: 'PYTHON', cells: loadCells() },
+      { id: 'revenue-check', name: 'Revenue quality checks', language: 'SQL', cells: cloneCells(starterCells).slice(1, 3) },
+      { id: 'retention-analysis', name: 'Retention analysis', language: 'PYTHON', cells: cloneCells(starterCells).slice(0, 2) },
+    ]
+  };
+}
+function activeNotebook() { return state.notebooks.notebooks.find(notebook => notebook.id === state.activeNotebookId); }
+function resetHistory() { state.history = [JSON.stringify(state.cells)]; state.historyIndex = 0; }
+function switchNotebook(id) {
+  const notebook = state.notebooks.notebooks.find(item => item.id === id); if (!notebook || id === state.activeNotebookId) return;
+  state.activeNotebookId = id; state.notebooks.activeNotebookId = id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = null; resetHistory(); persistNotebooks(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'instant' });
+}
+function persistNotebooks() { localStorage.setItem('better-notebooks-notebooks', JSON.stringify(state.notebooks)); }
 function save(recordHistory = true) {
-  localStorage.setItem('better-notebooks-cells', JSON.stringify(state.cells));
+  activeNotebook().cells = state.cells; state.notebooks.activeNotebookId = state.activeNotebookId; persistNotebooks();
   if (recordHistory) {
     const snapshot = JSON.stringify(state.cells);
     if (state.history[state.historyIndex] !== snapshot) {
@@ -115,6 +137,15 @@ function renderOutline() {
     ? headings.map(heading => `<button class="outline-item level-${heading.level}" data-outline-id="${heading.id}"><span>H${heading.level}</span>${escapeHTML(heading.title)}</button>`).join('')
     : '<p class="outline-empty">Add Markdown headings to build an outline.</p>';
 }
+function renderNotebookNavigation() {
+  const notebook = activeNotebook();
+  document.querySelector('#notebook-list').innerHTML = state.notebooks.notebooks.map(item => `<button class="project-notebook ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button>`).join('');
+  document.querySelector('#notebook-tabs').innerHTML = state.notebooks.notebooks.map(item => `<button class="notebook-tab ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button>`).join('');
+  document.querySelector('#notebook-title').textContent = notebook.name;
+  document.querySelector('#crumb-notebook-name').textContent = notebook.name;
+  document.querySelector('.notebook-head .eyebrow').firstChild.textContent = `${notebook.language} NOTEBOOK `;
+}
+function renderWorkspace() { renderNotebookNavigation(); renderDatasets(); renderCells(); }
 function updateCell(id, patch) { Object.assign(getCell(id), patch); save(); renderOutline(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
 function focusCell(id, preventScroll = false) { requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] .code-input`)?.focus({ preventScroll })); }
@@ -154,6 +185,9 @@ cellsEl.addEventListener('dragend', () => { state.dragId = null; document.queryS
 document.querySelector('#run-all').addEventListener('click', () => { state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells(); });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
+document.querySelector('#new-notebook-button').addEventListener('click', () => { const number = state.notebooks.notebooks.length + 1; const notebook = { id: crypto.randomUUID(), name: `Untitled notebook ${number}`, language: 'PYTHON', cells: [newCell('python')] }; notebook.cells[0].source = ''; state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = notebook.cells[0].id; resetHistory(); persistNotebooks(); renderWorkspace(); focusCell(notebook.cells[0].id); });
+document.querySelector('#notebook-list').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
+document.querySelector('#notebook-tabs').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
 document.querySelector('#outline-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('outline-collapsed'));
 document.querySelector('#outline-list').addEventListener('click', event => document.querySelector(`[data-id="${event.target.closest('[data-outline-id]')?.dataset.outlineId}"]`)?.scrollIntoView({ behavior:'smooth', block:'center' }));
 document.querySelector('#dismiss-notice').addEventListener('click', event => event.target.closest('.notice').remove());
@@ -177,4 +211,6 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Backspace' && state.selected.size && !document.activeElement.matches('.code-input')) { event.preventDefault(); deleteSelected(); }
 });
 
-save(); renderDatasets(); renderCells();
+state.activeNotebookId = state.notebooks.activeNotebookId || state.notebooks.notebooks[0].id;
+state.cells = activeNotebook().cells;
+resetHistory(); save(false); renderWorkspace();

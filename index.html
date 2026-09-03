@@ -25,6 +25,11 @@
           <button class="nav-item"><span>◫</span> Recents</button>
         </nav>
 
+        <div class="sidebar-section open-notebooks-section">
+          <div class="section-label"><span>OPEN NOTEBOOKS</span></div>
+          <div id="notebook-list" class="notebook-list"></div>
+        </div>
+
         <div class="sidebar-section">
           <div class="section-label"><span>NOTEBOOK OUTLINE</span><button class="icon-button small" id="outline-toggle" aria-label="Toggle notebook outline">⌄</button></div>
           <div id="outline-list"></div>
@@ -38,18 +43,19 @@
 
       <main class="workspace">
         <header class="topbar">
-          <div class="crumbs"><span>Projects</span><span>/</span><span>Customer Analytics</span><span>/</span><strong>Explore customer behaviour</strong></div>
+          <div class="crumbs"><span>Projects</span><span>/</span><span>Customer Analytics</span><span>/</span><strong id="crumb-notebook-name">Explore customer behaviour</strong></div>
           <div class="topbar-actions">
             <span class="saved-state" id="saved-state">Saved locally</span>
             <button class="button ghost" id="settings-button">⚙ Settings</button>
             <button class="avatar" aria-label="Profile">BP</button>
           </div>
         </header>
+        <nav class="notebook-tabs" id="notebook-tabs" aria-label="Open notebook tabs"></nav>
 
         <section class="notebook-head">
           <div>
             <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill">● Idle</span><button class="executor-selector" id="executor-selector">Python 3.11 <span>⌄</span></button><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
-            <h1>Explore customer behaviour</h1>
+            <h1 id="notebook-title">Explore customer behaviour</h1>
             <p>Prototype notebook · Local state only</p>
           </div>
           <div class="head-actions">
