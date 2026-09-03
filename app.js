@@ -168,7 +168,7 @@ settingsModal.addEventListener('click', event => { if (event.target === settings
 document.addEventListener('keydown', event => {
   const mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape') { closeSettings(); return; }
-  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) { const nextId = state.cells[cellIndex(cell.dataset.id) + 1]?.id; runCell(cell.dataset.id); if (nextId) requestAnimationFrame(() => { setActiveCell(nextId); document.querySelector(`[data-id="${nextId}"] .code-input, [data-id="${nextId}"] .markdown-render`)?.focus(); }); } return; }
+  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) { const nextId = state.cells[cellIndex(cell.dataset.id) + 1]?.id; runCell(cell.dataset.id); if (nextId) requestAnimationFrame(() => { setActiveCell(nextId); document.querySelector(`[data-id="${nextId}"] .code-input, [data-id="${nextId}"] .markdown-render`)?.focus(); }); else { const newCodeCell = newCell('python'); state.cells.push(newCodeCell); state.activeCellId = newCodeCell.id; save(); renderCells(); focusCell(newCodeCell.id); } } return; }
   if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); return; }
   if (mod && event.key === 'Enter') { event.preventDefault(); (state.selected.size ? [...state.selected] : [document.activeElement.closest?.('.cell')?.dataset.id]).filter(Boolean).forEach(runCell); }
   if (mod && event.key.toLowerCase() === 'c' && state.selected.size) { event.preventDefault(); copySelected(); }
