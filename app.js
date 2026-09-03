@@ -105,7 +105,15 @@ function renderToolbar() {
 }
 function renderOutline() {
   const list = document.querySelector('#outline-list');
-  list.innerHTML = state.cells.map((cell, index) => `<button class="outline-item" data-outline-id="${cell.id}"><span>${cell.type === 'markdown' ? 'M' : cell.type === 'sql' ? 'S' : 'P'}${index + 1}</span>${escapeHTML(cell.source.split('\n').find(line => line.trim())?.replace(/^#+\s*/, '') || 'Empty cell').slice(0, 27)}</button>`).join('');
+  const headings = state.cells.flatMap(cell => cell.type === 'markdown'
+    ? cell.source.split('\n').flatMap(line => {
+      const match = line.match(/^(#{1,3})\s+(.+)/);
+      return match ? [{ id: cell.id, level: match[1].length, title: match[2] }] : [];
+    })
+    : []);
+  list.innerHTML = headings.length
+    ? headings.map(heading => `<button class="outline-item level-${heading.level}" data-outline-id="${heading.id}"><span>H${heading.level}</span>${escapeHTML(heading.title)}</button>`).join('')
+    : '<p class="outline-empty">Add Markdown headings to build an outline.</p>';
 }
 function updateCell(id, patch) { Object.assign(getCell(id), patch); save(); renderOutline(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
@@ -143,7 +151,6 @@ cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.cl
 cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCell(state.dragId, cell.dataset.id); });
 cellsEl.addEventListener('dragend', () => { state.dragId = null; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target')); });
 
-document.querySelector('#add-cell-row').addEventListener('click', () => { const cell = newCell(); state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
 document.querySelector('#run-all').addEventListener('click', () => { state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells(); });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
