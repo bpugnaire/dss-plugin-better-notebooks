@@ -53,8 +53,17 @@ function outputMarkup(kind) {
   if (kind === 'table') return `<div class="output-header"><strong>customers</strong><span>6 rows × 5 columns</span><div class="output-controls"><button>⌕ Search</button><button>⇅ Sort</button><button>▤ Explore</button></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th></th>${TABLE.columns.map(([name, type]) => `<th>${name}<span>${type}</span></th>`).join('')}</tr></thead><tbody>${TABLE.rows.map((row, index) => `<tr><td class="row-num">${index + 1}</td>${row.map(value => `<td>${value}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   return '';
 }
+function markdownMarkup(source) {
+  return escapeHTML(source).split('\n').map(line => {
+    if (line.startsWith('# ')) return `<h1>${line.slice(2)}</h1>`;
+    if (line.startsWith('## ')) return `<h2>${line.slice(3)}</h2>`;
+    if (line.startsWith('### ')) return `<h3>${line.slice(4)}</h3>`;
+    return line ? `<p>${line}</p>` : '';
+  }).join('');
+}
 function autoHeight(textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`; }
 function renderCells() {
+  const scrollY = window.scrollY;
   cellsEl.innerHTML = '';
   state.cells.forEach((data, index) => {
     const node = template.content.firstElementChild.cloneNode(true);
@@ -64,12 +73,14 @@ function renderCells() {
     const textarea = node.querySelector('.code-input'); textarea.value = data.source;
     textarea.placeholder = data.type === 'markdown' ? 'Write Markdown' : data.type === 'sql' ? 'Write SQL' : 'Write Python';
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
-    node.querySelector('.cell-output').innerHTML = outputMarkup(data.output);
+    node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output);
     const meta = node.querySelector('.execution-meta'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     cellsEl.appendChild(node); autoHeight(textarea);
+    const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<button data-insert-after="${data.id}" title="Add cell here" aria-label="Add cell here">+</button>`; cellsEl.appendChild(gap);
   });
   renderToolbar(); renderOutline();
+  requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
 }
 function renderToolbar() {
   const toolbar = document.querySelector('#batch-toolbar'); const count = state.selected.size;
@@ -100,8 +111,13 @@ cellsEl.addEventListener('click', event => {
   if (event.target.closest('.run-cell')) runCell(id);
   if (event.target.closest('.insert-below')) insertAfter(id);
   if (event.target.closest('.delete-cell')) { state.selected = new Set([id]); deleteSelected(); }
-  if (event.target.closest('.type-menu')) { const target = getCell(id); target.type = target.type === 'python' ? 'sql' : target.type === 'sql' ? 'markdown' : 'python'; target.output = ''; target.meta = ''; save(); renderCells(); }
+  if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
+  const typeOption = event.target.closest('[data-cell-type]');
+  if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); renderCells(); }
+  if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.querySelector('.code-input').classList.add('editing'); cell.querySelector('.code-input').focus(); autoHeight(cell.querySelector('.code-input')); }
 });
+cellsEl.addEventListener('focusout', event => { if (event.target.matches('.code-input.editing')) { event.target.classList.remove('editing'); event.target.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
+cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter); });
 cellsEl.addEventListener('dragstart', event => { const cell = event.target.closest('.cell'); if (!cell || event.target.closest('textarea')) { event.preventDefault(); return; } state.dragId = cell.dataset.id; cell.classList.add('dragging'); });
 cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell && cell.dataset.id !== state.dragId) cell.classList.add('drop-target'); });
 cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.classList.remove('drop-target'));
