@@ -93,7 +93,7 @@ function renderCells() {
     node.querySelector('.cell-footer').hidden = !data.meta;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     cellsEl.appendChild(node); autoHeight(textarea);
-    const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<button class="insert-trigger" title="Add a cell here" aria-label="Add a cell here">+</button><div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python"><span>+</span> Add code cell</button><button data-insert-after="${data.id}" data-insert-type="markdown"><span>¶</span> Add Markdown cell</button></div>`; cellsEl.appendChild(gap);
+    const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
   });
   renderToolbar(); renderOutline();
   requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
