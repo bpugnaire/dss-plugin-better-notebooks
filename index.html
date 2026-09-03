@@ -26,19 +26,14 @@
 
         <button class="new-button" id="new-notebook-button"><span>+</span> New notebook</button>
 
-        <nav class="sidebar-nav" aria-label="Notebook navigation">
-          <button class="nav-item active" id="project-notebooks-button"><span>▣</span> Notebooks</button>
-          <button class="nav-item" id="recents-button"><span>◫</span> Recents</button>
-        </nav>
-
         <div class="sidebar-section explorer-section">
-          <div class="section-label"><span id="notebook-tree-label">PROJECT NOTEBOOKS</span><div class="explorer-actions"><button class="icon-button small" id="new-folder-button" title="New theoretical folder" aria-label="New folder">▱+</button><button class="icon-button small" id="copy-notebook-button" title="Copy active notebook" aria-label="Copy active notebook">⧉</button><button class="icon-button small" id="delete-notebook-button" title="Delete active notebook" aria-label="Delete active notebook">⌫</button></div></div>
-          <div id="notebook-tree" class="notebook-list"></div>
+          <div class="section-label"><button class="section-toggle" id="notebooks-section-toggle" aria-expanded="true"><span>NOTEBOOKS</span><span>⌄</span></button><div class="explorer-actions"><button class="icon-button small" id="new-folder-button" title="New theoretical folder" aria-label="New folder">▱+</button><button class="icon-button small" id="copy-notebook-button" title="Copy active notebook" aria-label="Copy active notebook">⧉</button><button class="icon-button small" id="delete-notebook-button" title="Delete active notebook" aria-label="Delete active notebook">⌫</button></div></div>
+          <div class="notebook-tree-scroll"><div id="notebook-tree" class="notebook-list"></div></div>
         </div>
 
-        <div class="sidebar-section open-notebooks-section">
-          <div class="section-label"><span>OPEN NOTEBOOKS</span></div>
-          <div id="open-notebook-list" class="notebook-list"></div>
+        <div class="sidebar-section recents-section collapsed">
+          <div class="section-label"><button class="section-toggle" id="recents-section-toggle" aria-expanded="false"><span>RECENTS</span><span>⌄</span></button></div>
+          <div id="recent-notebook-list" class="notebook-list"></div>
         </div>
 
         <div class="sidebar-section outline-section">

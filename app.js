@@ -41,11 +41,11 @@ function loadNotebooks() {
   } catch { /* Start from the browser-only prototype notebook. */ }
   return {
     activeNotebookId: 'customer-behaviour',
-    folders: [{ id: 'analysis', name: 'Analysis' }, { id: 'quality', name: 'Data quality' }],
+    folders: [],
     notebooks: [
-      { id: 'customer-behaviour', name: 'Explore customer behaviour', language: 'PYTHON', cells: loadCells(), open: true, updatedAt: 3, folderId: 'analysis' },
-      { id: 'revenue-check', name: 'Revenue quality checks', language: 'SQL', cells: cloneCells(starterCells).slice(1, 3), open: true, updatedAt: 2, folderId: 'quality' },
-      { id: 'retention-analysis', name: 'Retention analysis', language: 'PYTHON', cells: cloneCells(starterCells).slice(0, 2), open: true, updatedAt: 1, folderId: 'analysis' },
+      { id: 'customer-behaviour', name: 'Explore customer behaviour', language: 'PYTHON', cells: loadCells(), open: true, updatedAt: 3, folderId: null },
+      { id: 'revenue-check', name: 'Revenue quality checks', language: 'SQL', cells: cloneCells(starterCells).slice(1, 3), open: true, updatedAt: 2, folderId: null },
+      { id: 'retention-analysis', name: 'Retention analysis', language: 'PYTHON', cells: cloneCells(starterCells).slice(0, 2), open: true, updatedAt: 1, folderId: null },
     ]
   };
 }
@@ -140,19 +140,14 @@ function renderOutline() {
 }
 function renderNotebookNavigation() {
   const notebook = activeNotebook();
-  const listedNotebooks = state.notebookListMode === 'recent'
-    ? [...state.notebooks.notebooks].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3)
-    : state.notebooks.notebooks;
+  const recentNotebooks = [...state.notebooks.notebooks].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3);
   const openNotebooks = state.notebooks.notebooks.filter(item => item.open);
-  const notebookButton = item => `<div class="project-notebook-row ${item.id === state.activeNotebookId ? 'active' : ''}" data-drag-notebook-id="${item.id}" draggable="true"><button class="project-notebook" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button></div>`;
+  const notebookButton = item => `<div class="project-notebook-row ${item.id === state.activeNotebookId ? 'active' : ''}" data-drag-notebook-id="${item.id}" draggable="true"><button class="project-notebook" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span>${item.open ? '<i class="open-file-indicator" title="Open in editor"></i>' : ''}</button></div>`;
   const folderTree = state.notebooks.folders.map(folder => `<div class="notebook-folder"><div class="folder-label" data-folder-id="${folder.id}"><span class="folder-icon">▣</span> <strong>${escapeHTML(folder.name)}</strong></div>${state.notebooks.notebooks.filter(item => item.folderId === folder.id).map(notebookButton).join('') || '<span class="empty-folder">Empty</span>'}</div>`).join('');
   const rootNotebooks = state.notebooks.notebooks.filter(item => !item.folderId).map(notebookButton).join('');
-  document.querySelector('#notebook-tree-label').textContent = state.notebookListMode === 'recent' ? 'RECENT NOTEBOOKS' : 'PROJECT NOTEBOOKS';
-  document.querySelector('#notebook-tree').innerHTML = state.notebookListMode === 'recent' ? listedNotebooks.map(notebookButton).join('') : `${folderTree}${rootNotebooks ? `<div class="folder-label root-label" data-folder-id="root"><span class="folder-icon">▣</span> <strong>Root</strong></div>${rootNotebooks}` : ''}`;
-  document.querySelector('#open-notebook-list').innerHTML = openNotebooks.map(item => `<button class="project-notebook ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button>`).join('');
+  document.querySelector('#notebook-tree').innerHTML = `${folderTree}<div class="folder-label root-label" data-folder-id="root"><span class="folder-icon">▣</span> <strong>Root</strong></div>${rootNotebooks || '<span class="empty-folder">Empty</span>'}`;
+  document.querySelector('#recent-notebook-list').innerHTML = recentNotebooks.map(notebookButton).join('');
   document.querySelector('#notebook-tabs').innerHTML = openNotebooks.map(item => `<div class="notebook-tab ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><button class="tab-select" aria-label="Open ${escapeHTML(item.name)}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button><button class="close-tab" aria-label="Close ${escapeHTML(item.name)}">×</button></div>`).join('');
-  document.querySelector('#project-notebooks-button').classList.toggle('active', state.notebookListMode === 'all');
-  document.querySelector('#recents-button').classList.toggle('active', state.notebookListMode === 'recent');
   document.querySelector('#notebook-title').textContent = notebook.name;
   document.querySelector('#crumb-notebook-name').textContent = notebook.name;
   document.querySelector('.notebook-head .eyebrow').firstChild.textContent = `${notebook.language} NOTEBOOK `;
@@ -242,10 +237,10 @@ document.querySelector('#notebook-tree').addEventListener('dragend', () => docum
 document.querySelector('#notebook-tree').addEventListener('dragover', event => { const folder = event.target.closest('[data-folder-id]'); if (!folder) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; document.querySelectorAll('.folder-label.drop-target').forEach(node => node.classList.remove('drop-target')); folder.classList.add('drop-target'); });
 document.querySelector('#notebook-tree').addEventListener('dragleave', event => event.target.closest('[data-folder-id]')?.classList.remove('drop-target'));
 document.querySelector('#notebook-tree').addEventListener('drop', event => { const folder = event.target.closest('[data-folder-id]'); if (!folder) return; event.preventDefault(); const notebook = state.notebooks.notebooks.find(item => item.id === event.dataTransfer.getData('text/plain')); if (!notebook) return; notebook.folderId = folder.dataset.folderId === 'root' ? null : folder.dataset.folderId; notebook.updatedAt = Date.now(); persistNotebooks(); renderNotebookNavigation(); });
-document.querySelector('#open-notebook-list').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
+document.querySelector('#recent-notebook-list').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
 document.querySelector('#notebook-tabs').addEventListener('click', event => { const close = event.target.closest('.close-tab'); if (close) { closeNotebook(close.closest('[data-notebook-id]').dataset.notebookId); return; } const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
-document.querySelector('#project-notebooks-button').addEventListener('click', () => { state.notebookListMode = 'all'; renderNotebookNavigation(); });
-document.querySelector('#recents-button').addEventListener('click', () => { state.notebookListMode = 'recent'; renderNotebookNavigation(); });
+document.querySelector('#notebooks-section-toggle').addEventListener('click', () => document.querySelector('.explorer-section').classList.toggle('collapsed'));
+document.querySelector('#recents-section-toggle').addEventListener('click', () => document.querySelector('.recents-section').classList.toggle('collapsed'));
 document.querySelector('#rename-notebook-button').addEventListener('click', renameActiveNotebook);
 document.querySelector('#notebook-title').addEventListener('dblclick', renameActiveNotebook);
 document.querySelector('#copy-notebook-button').addEventListener('click', copyActiveNotebook);
