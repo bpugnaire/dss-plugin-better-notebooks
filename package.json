@@ -2,7 +2,8 @@
   "name": "dss-plugin-better-notebooks",
   "private": true,
   "scripts": {
-    "build:editor": "esbuild webapps/better-notebooks/editor.js --bundle --format=iife --global-name=BetterNotebookEditor --target=es2020 --outfile=webapps/better-notebooks/vendor/codemirror.js"
+    "build:webapp": "esbuild webapps/better-notebooks/app-runtime.js --bundle --format=iife --minify --target=es2020 --outfile=webapps/better-notebooks/app.js",
+    "build:editor": "pnpm run build:webapp"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.0",

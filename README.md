@@ -23,13 +23,15 @@ needed for the current UI workflow.
 
 ## Rebuild the packaged editor
 
-The Dataiku webapp ships a checked-in CodeMirror bundle at
-`webapps/better-notebooks/vendor/codemirror.js`, so DSS never needs access to
-a CDN. After editing `webapps/better-notebooks/editor.js`, run:
+The Dataiku webapp ships CodeMirror bundled directly into the checked-in
+`webapps/better-notebooks/app.js`, so DSS never needs access to a CDN or a
+second static asset. The editable application source is
+`webapps/better-notebooks/app-runtime.js`. After editing it or
+`webapps/better-notebooks/editor.js`, run:
 
 ```bash
 pnpm install
-pnpm run build:editor
+pnpm run build:webapp
 ```
 
 The bundle adds Python/SQL syntax highlighting, project-aware completion,

@@ -1,11 +1,10 @@
 """DSS project context and native notebook storage adapters."""
 
 import ast
-import os
 import re
 
 import dataiku
-from flask import jsonify, request, send_from_directory
+from flask import jsonify, request
 
 
 NOTEBOOK_NAME = re.compile(r"^[\w .-]{1,100}$", re.UNICODE)
@@ -14,12 +13,6 @@ MAX_CHECK_SOURCE_LENGTH = 200_000
 
 def current_project():
     return dataiku.api_client().get_default_project()
-
-
-@app.route("/editor-bundle", methods=["GET"])
-def editor_bundle():
-    """Serve the packaged editor through the webapp backend in DSS."""
-    return send_from_directory(os.path.join(os.path.dirname(__file__), "vendor"), "codemirror.js")
 
 
 def available_runtimes():
