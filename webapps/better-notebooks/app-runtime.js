@@ -412,6 +412,8 @@ function outputMarkup(kind) {
     const content = kind.outputs.map(output => {
       if (output.output_type === 'stream') return `<pre class="runtime-output stream">${escapeHTML(outputText(output.text))}</pre>`;
       if (output.output_type === 'error') return `<pre class="runtime-output error-output">${escapeHTML(outputText([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n')))}</pre>`;
+      const dataframe = dataframeMarkup(output.data?.['text/html']);
+      if (dataframe) return dataframe;
       const text = outputText(output.data?.['text/plain']);
       return text ? `<pre class="runtime-output">${escapeHTML(text)}</pre>` : '';
     }).join('');
@@ -420,6 +422,19 @@ function outputMarkup(kind) {
   if (kind === 'query') return `<div class="query-output success">Query completed · 5 rows returned</div>`;
   if (kind === 'table') return `<div class="output-header"><strong>customers</strong><span>6 rows × 5 columns</span><div class="output-controls"><button>⌕ Search</button><button>⇅ Sort</button><button>▤ Explore</button></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th></th>${TABLE.columns.map(([name, type]) => `<th>${name}<span>${type}</span></th>`).join('')}</tr></thead><tbody>${TABLE.rows.map((row, index) => `<tr><td class="row-num">${index + 1}</td>${row.map(value => `<td>${value}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   return '';
+}
+function dataframeMarkup(html) {
+  if (!html) return '';
+  const document = new DOMParser().parseFromString(outputText(html), 'text/html');
+  const sourceTable = document.querySelector('table.dataframe');
+  if (!sourceTable) return '';
+  const renderRows = selector => [...sourceTable.querySelectorAll(selector)].map(row => `<tr>${[...row.cells].map(cell => {
+    const tag = cell.tagName.toLowerCase();
+    return `<${tag}>${escapeHTML(cell.textContent || '')}</${tag}>`;
+  }).join('')}</tr>`).join('');
+  const columnCount = sourceTable.querySelector('thead tr')?.cells.length ? sourceTable.querySelector('thead tr').cells.length - 1 : 0;
+  const rowCount = sourceTable.querySelectorAll('tbody tr').length;
+  return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><button type="button" title="Table exploration will be added next">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
 }
 function markdownMarkup(source) {
   return escapeHTML(source).split('\n').map(line => {
@@ -687,6 +702,13 @@ document.querySelector('#new-folder-button').addEventListener('click', addFolder
 document.querySelector('#explorer-view-button').addEventListener('click', () => { document.querySelector('.sidebar').classList.remove('outline-view'); document.querySelector('.sidebar').classList.add('explorer-view'); document.querySelector('#explorer-view-button').classList.add('active'); document.querySelector('#outline-view-button').classList.remove('active'); });
 document.querySelector('#outline-view-button').addEventListener('click', () => { document.querySelector('.sidebar').classList.remove('explorer-view'); document.querySelector('.sidebar').classList.add('outline-view'); document.querySelector('#outline-view-button').classList.add('active'); document.querySelector('#explorer-view-button').classList.remove('active'); });
 document.querySelector('#sidebar-collapse-button').addEventListener('click', () => { document.querySelector('.sidebar').classList.toggle('collapsed'); document.querySelector('.app-shell').classList.toggle('sidebar-collapsed'); });
+document.querySelector('#data-panel-toggle').addEventListener('click', event => {
+  const shell = document.querySelector('.app-shell'); const collapsed = shell.classList.toggle('data-panel-collapsed');
+  event.currentTarget.setAttribute('aria-pressed', String(collapsed));
+  event.currentTarget.setAttribute('aria-label', collapsed ? 'Show project datasets' : 'Hide project datasets');
+  event.currentTarget.title = collapsed ? 'Show project datasets' : 'Hide project datasets';
+  event.currentTarget.textContent = collapsed ? '▰' : '▱';
+});
 const folderModal = document.querySelector('#folder-modal');
 const closeFolderModal = () => { folderModal.classList.add('hidden'); document.querySelector('#folder-form').reset(); };
 document.querySelector('#close-folder-modal').addEventListener('click', closeFolderModal);
