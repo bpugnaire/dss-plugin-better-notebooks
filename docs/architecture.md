@@ -29,7 +29,7 @@ interfaces:
 | --- | --- | --- |
 | Project datasets | List datasets and schemas; insert safe loading snippets | Read-only project API call |
 | Notebook storage | Read/write native Jupyter documents | Round-trip one sample notebook |
-| Python execution | Submit a cell to the supported DSS execution surface and return stdout/results | Execute `1 + 1` |
+| Python execution | Connect to the notebook’s DSS Jupyter session and return stdout/results | Execute `1 + 1` |
 | SQL execution | Submit SQL with an explicitly selected connection/warehouse | Execute `SELECT 1` |
 | AI completion | Send only the current line and intended language to an approved model endpoint | One-line completion, opt-in |
 
@@ -41,9 +41,10 @@ be stored in browser storage.
 
 1. Install this webapp component in a development DSS instance and validate the
    native read/write round trip against a disposable notebook.
-2. Prove one supported Python execution path through DSS. This must create or
-   attach to a real native kernel and return structured stdout, errors, and
-   table results; the present Run control intentionally does not fake this.
+2. Validate the implemented Jupyter session/WebSocket execution bridge against
+   the supported DSS versions. It starts or reconnects to a native kernel and
+   persists stdout, text displays, and errors; rich tables and images still
+   need dedicated renderers.
 3. Add an explicit SQL connection/warehouse selector, then prove `SELECT 1`
    through a supported SQL execution surface.
 4. Replace static output placeholders with normalized execution results and a

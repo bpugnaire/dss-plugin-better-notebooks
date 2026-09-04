@@ -11,7 +11,7 @@ let DATASETS = [
   { name: 'support_tickets', kind: 'orange' },
 ];
 const projectContext = { name: 'Current project', key: '', isDss: false };
-const dss = { enabled: false, runtimes: [], activeRuntimeId: 'dss_builtin' };
+const dss = { enabled: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
 let dssSaveTimer;
 const diagnosticsTimers = new Map();
 
@@ -101,6 +101,106 @@ async function dssRequest(path, options = {}) {
   if (!response.ok) throw new Error(payload.error || `DSS request failed (${response.status})`);
   return payload;
 }
+function xsrfToken() {
+  const match = document.cookie.match(/(?:^|; )_xsrf=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+async function jupyterRequest(path, options = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  const token = xsrfToken();
+  if (token) headers['X-XSRFToken'] = token;
+  const response = await fetch(`/jupyter/${path.replace(/^\//, '')}`, { credentials: 'same-origin', headers, ...options });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || payload.reason || `Jupyter request failed (${response.status})`);
+  return payload;
+}
+function notebookKernelName(notebook) {
+  return dss.runtimes.find(runtime => runtime.id === notebook.runtimeId)?.kernelSpec?.name
+    || notebook.dssContent?.metadata?.kernelspec?.name || 'python3';
+}
+function setKernelStatus(label, state = 'idle') {
+  const pill = document.querySelector('#kernel-status');
+  if (!pill) return;
+  pill.textContent = `● ${label}`;
+  pill.dataset.state = state;
+}
+function jupyterSocketUrl(kernelId, sessionId) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/jupyter/api/kernels/${encodeURIComponent(kernelId)}/channels?session_id=${encodeURIComponent(sessionId)}`;
+}
+function jupyterMessage(type, content, sessionId) {
+  return {
+    header: { msg_id: crypto.randomUUID(), username: 'better-notebooks', session: sessionId, msg_type: type, version: '5.3' },
+    parent_header: {}, metadata: {}, content,
+  };
+}
+function jupyterOutput(message) {
+  const type = message.header?.msg_type;
+  const content = message.content || {};
+  if (type === 'stream') return { output_type: 'stream', name: content.name || 'stdout', text: content.text || '' };
+  if (type === 'error') return { output_type: 'error', ename: content.ename || 'Error', evalue: content.evalue || '', traceback: content.traceback || [] };
+  if (type === 'execute_result') return { output_type: 'execute_result', execution_count: content.execution_count, data: content.data || {}, metadata: content.metadata || {} };
+  if (type === 'display_data' || type === 'update_display_data') return { output_type: 'display_data', data: content.data || {}, metadata: content.metadata || {} };
+  return null;
+}
+function handleJupyterMessage(event) {
+  let message;
+  try { message = JSON.parse(event.data); } catch { return; }
+  const kernel = dss.kernel;
+  if (!kernel) return;
+  const request = kernel.pending.get(message.parent_header?.msg_id);
+  if (!request) return;
+  const output = jupyterOutput(message);
+  if (output) request.outputs.push(output);
+  if (message.header?.msg_type === 'execute_reply') request.executionCount = message.content?.execution_count;
+  if (message.header?.msg_type === 'status' && message.content?.execution_state === 'idle') {
+    clearTimeout(request.timeout); kernel.pending.delete(message.parent_header?.msg_id); setKernelStatus('Connected', 'connected');
+    request.resolve({ outputs: request.outputs, executionCount: request.executionCount });
+  }
+}
+async function connectDssKernel(notebook) {
+  if (!projectContext.key) await loadProjectContext();
+  if (!projectContext.key) throw new Error('The current DSS project is not available. Refresh the webapp and try again.');
+  if (dss.kernel?.notebookId === notebook.id && dss.kernel.socket.readyState === WebSocket.OPEN) return dss.kernel;
+  if (dss.kernel?.socket) dss.kernel.socket.close();
+  await flushDssSave(notebook);
+  setKernelStatus('Starting…', 'starting');
+  const session = await jupyterRequest('api/sessions', {
+    method: 'POST', body: JSON.stringify({
+      path: `${projectContext.key}/${notebook.name}.ipynb`, type: 'notebook', name: '',
+      kernel: { id: null, name: notebookKernelName(notebook) },
+    }),
+  });
+  if (!session.kernel?.id) throw new Error('DSS started a session without a kernel.');
+  const sessionId = crypto.randomUUID();
+  const socket = new WebSocket(jupyterSocketUrl(session.kernel.id, sessionId));
+  const kernel = { notebookId: notebook.id, sessionId, dssSessionId: session.id, kernelId: session.kernel.id, socket, pending: new Map() };
+  dss.kernel = kernel;
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out while connecting to the DSS kernel.')), 20000);
+    socket.addEventListener('open', () => { clearTimeout(timeout); resolve(); }, { once: true });
+    socket.addEventListener('error', () => { clearTimeout(timeout); reject(new Error('Could not connect to the DSS kernel WebSocket.')); }, { once: true });
+  });
+  socket.addEventListener('message', handleJupyterMessage);
+  socket.addEventListener('close', () => { if (dss.kernel === kernel) { dss.kernel = null; setKernelStatus('Disconnected', 'error'); } });
+  setKernelStatus('Connected', 'connected');
+  return kernel;
+}
+async function executeInDssKernel(notebook, source) {
+  const kernel = await connectDssKernel(notebook);
+  const message = jupyterMessage('execute_request', {
+    code: source, silent: false, store_history: true, user_expressions: {}, allow_stdin: false, stop_on_error: true,
+  }, kernel.sessionId);
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      kernel.pending.delete(message.header.msg_id);
+      reject(new Error('Cell execution timed out after 90 seconds.'));
+    }, 90000);
+    kernel.pending.set(message.header.msg_id, { outputs: [], executionCount: null, resolve, reject, timeout });
+    setKernelStatus('Running…', 'busy');
+    kernel.socket.send(JSON.stringify({ ...message, channel: 'shell' }));
+  });
+}
 function setSavedState(message, isError = false) {
   const status = document.querySelector('#saved-state');
   status.textContent = message;
@@ -161,7 +261,7 @@ function cellsFromDss(raw) {
     type: cell.cell_type === 'markdown' ? 'markdown' : cell.metadata?.betterNotebooks?.cellType === 'sql' ? 'sql' : 'python',
     source: sourceText(cell.source),
     meta: cell.execution_count ? `Previously run · #${cell.execution_count}` : '',
-    output: '',
+    output: cell.outputs?.length ? { outputs: cell.outputs } : '',
     dssCell: cell,
   }));
 }
@@ -222,6 +322,10 @@ function renderProjectContext() {
   document.querySelector('#notebook-subtitle').textContent = projectContext.isDss
     ? `${projectContext.name} · Native DSS notebook view`
     : 'Browser-local notebook workspace';
+  const notice = document.querySelector('#runtime-notice');
+  if (notice) notice.innerHTML = projectContext.isDss
+    ? '<strong>Native DSS mode.</strong> Changes save to this project’s Jupyter notebook. Run starts or reconnects to its DSS kernel.'
+    : '<strong>Browser preview.</strong> Run outputs are illustrative until this webapp is opened inside DSS.';
 }
 async function loadProjectContext() {
   if (!isDssWebappRuntime()) return;
@@ -260,6 +364,15 @@ function renderDatasets(filter = '') {
     : '<p class="dataset-empty">No project datasets found.</p>';
 }
 function outputMarkup(kind) {
+  if (kind && typeof kind === 'object' && Array.isArray(kind.outputs)) {
+    const content = kind.outputs.map(output => {
+      if (output.output_type === 'stream') return `<pre class="runtime-output stream">${escapeHTML(sourceText(output.text))}</pre>`;
+      if (output.output_type === 'error') return `<pre class="runtime-output error-output">${escapeHTML([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n'))}</pre>`;
+      const text = sourceText(output.data?.['text/plain']);
+      return text ? `<pre class="runtime-output">${escapeHTML(text)}</pre>` : '';
+    }).join('');
+    return content || '<div class="query-output success">Cell completed with no display output</div>';
+  }
   if (kind === 'query') return `<div class="query-output success">Query completed · 5 rows returned</div>`;
   if (kind === 'table') return `<div class="output-header"><strong>customers</strong><span>6 rows × 5 columns</span><div class="output-controls"><button>⌕ Search</button><button>⇅ Sort</button><button>▤ Explore</button></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th></th>${TABLE.columns.map(([name, type]) => `<th>${name}<span>${type}</span></th>`).join('')}</tr></thead><tbody>${TABLE.rows.map((row, index) => `<tr><td class="row-num">${index + 1}</td>${row.map(value => `<td>${value}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   return '';
@@ -415,7 +528,24 @@ function updateCell(id, patch) { const cell = getCell(id); Object.assign(cell, p
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
 function focusCell(id, preventScroll = false) { requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] .code-input`)?.focus({ preventScroll })); }
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
-function runCell(id) { if (activeNotebook().remote) { setSavedState('Native kernel execution bridge is not connected yet'); return; } const cell = getCell(id); state.activeCellId = id; cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : cell.type === 'markdown' ? '' : 'table'; save(); renderCells(); }
+async function runCell(id) {
+  const cell = getCell(id); if (!cell) return;
+  state.activeCellId = id;
+  if (cell.type === 'markdown') { cell.meta = 'Rendered just now'; save(); renderCells(); return; }
+  if (!activeNotebook().remote) { cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : 'table'; save(); renderCells(); return; }
+  const started = performance.now(); cell.meta = 'Running…'; renderCells();
+  try {
+    const source = cell.type === 'sql' ? `%sql\n${cell.source}` : cell.source;
+    const result = await executeInDssKernel(activeNotebook(), source);
+    cell.output = { outputs: result.outputs };
+    cell.dssCell = { ...(cell.dssCell || {}), outputs: result.outputs, execution_count: result.executionCount };
+    cell.meta = `Ran just now · ${((performance.now() - started) / 1000).toFixed(2)}s`;
+    save(); renderCells(); setSavedState('Executed in DSS');
+  } catch (error) {
+    cell.meta = 'Execution failed'; cell.output = { outputs: [{ output_type: 'error', ename: 'DSS execution error', evalue: error.message, traceback: [] }] };
+    renderCells(); setSavedState(`Execution failed: ${error.message}`, true); console.warn(error);
+  }
+}
 function selectCell(id, selected) { selected ? state.selected.add(id) : state.selected.delete(id); renderCells(); }
 function duplicateSelected() { const selection = state.cells.filter(cell => state.selected.has(cell.id)); if (!selection.length) return; const last = Math.max(...selection.map(cell => cellIndex(cell.id))); const copies = selection.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); state.cells.splice(last + 1, 0, ...copies); state.selected = new Set(copies.map(cell => cell.id)); save(); renderCells(); }
 function copySelected(remove = false) { const selected = state.cells.filter(cell => state.selected.has(cell.id)); if (!selected.length) return; state.clipboard = selected.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); if (remove) { state.cells = state.cells.filter(cell => !state.selected.has(cell.id)); state.selected.clear(); } save(); renderCells(); }
@@ -447,9 +577,8 @@ cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.cl
 cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCell(state.dragId, cell.dataset.id); });
 cellsEl.addEventListener('dragend', () => { state.dragId = null; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target')); });
 
-document.querySelector('#run-all').addEventListener('click', () => {
-  if (activeNotebook().remote) { setSavedState('Native kernel execution bridge is not connected yet'); return; }
-  state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells();
+document.querySelector('#run-all').addEventListener('click', async () => {
+  for (const cell of state.cells) await runCell(cell.id);
 });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#refresh-datasets').addEventListener('click', loadProjectContext);
@@ -518,10 +647,10 @@ document.querySelector('#settings-button').addEventListener('click', () => setti
 document.querySelector('#close-settings').addEventListener('click', closeSettings);
 document.querySelector('#done-settings').addEventListener('click', closeSettings);
 settingsModal.addEventListener('click', event => { if (event.target === settingsModal) closeSettings(); });
-document.addEventListener('keydown', event => {
+document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape') { closeSettings(); closeFolderModal(); return; }
-  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) { const nextId = state.cells[cellIndex(cell.dataset.id) + 1]?.id; if (nextId) { runCell(cell.dataset.id); requestAnimationFrame(() => { setActiveCell(nextId); document.querySelector(`[data-id="${nextId}"] .code-input, [data-id="${nextId}"] .markdown-render`)?.focus(); }); } else { const currentCell = getCell(cell.dataset.id); currentCell.meta = `Ran just now · ${currentCell.type === 'sql' ? '0.18' : '0.24'}s`; currentCell.output = currentCell.type === 'sql' ? 'query' : currentCell.type === 'markdown' ? '' : 'table'; const newCodeCell = newCell('python'); newCodeCell.source = ''; state.cells.push(newCodeCell); state.activeCellId = newCodeCell.id; save(); renderCells(); focusCell(newCodeCell.id, true); } } return; }
+  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) { const currentId = cell.dataset.id; const nextId = state.cells[cellIndex(currentId) + 1]?.id; await runCell(currentId); if (nextId) { setActiveCell(nextId); document.querySelector(`[data-id="${nextId}"] .code-input, [data-id="${nextId}"] .markdown-render`)?.focus(); } else { const newCodeCell = newCell('python'); newCodeCell.source = ''; state.cells.push(newCodeCell); state.activeCellId = newCodeCell.id; save(); renderCells(); focusCell(newCodeCell.id, true); } } return; }
   if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); return; }
   if (mod && event.key === 'Enter') { event.preventDefault(); (state.selected.size ? [...state.selected] : [document.activeElement.closest?.('.cell')?.dataset.id]).filter(Boolean).forEach(runCell); }
   if (mod && event.key.toLowerCase() === 'c' && state.selected.size) { event.preventDefault(); copySelected(); }

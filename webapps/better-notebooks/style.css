@@ -66,6 +66,7 @@ button { cursor: pointer; }
 
 .executor-selector span,.type-chevron { display:inline-block; transform:translateY(-1px); line-height:1; }.cell-type-selector { line-height:1; }
 .cell-diagnostic { border-top:1px solid #f0d9d6; background:#fff8f7; color:#b5473b; padding:6px 12px; font-family:'DM Mono',monospace; font-size:10px; line-height:1.4; }
+.status-pill[data-state="connected"] { color:#287f58; background:#eaf8ef; }.status-pill[data-state="starting"],.status-pill[data-state="busy"] { color:#865fb5; background:#f2edff; }.status-pill[data-state="error"] { color:#b5473b; background:#fff0ee; }.runtime-output { margin:0; padding:12px 17px; white-space:pre-wrap; overflow:auto; border-top:1px solid #efedf1; background:#fbfcfe; color:#3d4653; font:11px/1.55 'DM Mono',monospace; }.runtime-output.stream { color:#355468; }.runtime-output.error-output { color:#a93732; background:#fff8f7; }
 
 .sidebar .outline-item { padding-top:4px; padding-bottom:4px; line-height:1.2; }.sidebar .outline-item.level-1 { margin-top:4px; }.cell-actions { gap:0; }.cell-actions .more-cell { font-size:15px; line-height:10px; padding:1px 4px; }.cell-actions .ai-help { border:0; background:transparent; color:#8774d5; padding:2px 4px; font-size:13px; line-height:12px; }.cell-actions .ai-help:hover { color:#6145cc; }.cell-actions .icon-delete { padding-left:4px; padding-right:4px; }
 

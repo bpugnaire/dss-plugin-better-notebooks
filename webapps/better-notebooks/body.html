@@ -48,7 +48,7 @@
 
         <section class="notebook-head">
           <div>
-            <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill">● Idle</span><select class="executor-selector" id="executor-selector" aria-label="Python runtime"><option value="dss_builtin">DSS built-in Python</option></select><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
+            <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill" id="kernel-status" data-state="idle">● Idle</span><select class="executor-selector" id="executor-selector" aria-label="Python runtime"><option value="dss_builtin">DSS built-in Python</option></select><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
             <h1 class="notebook-title-row"><span id="notebook-title" tabindex="0" title="Double-click to rename">Explore customer behaviour</span><button class="rename-notebook" id="rename-notebook-button" title="Rename notebook" aria-label="Rename notebook">✎</button></h1>
             <p id="notebook-subtitle">Browser-local notebook workspace</p>
           </div>
@@ -57,7 +57,7 @@
           </div>
         </section>
 
-        <div class="notice"><span>✦</span><span><strong>Prototype mode.</strong> Cell changes are saved in your browser. Dataiku execution, datasets, and AI suggestions will connect later.</span><button id="dismiss-notice" aria-label="Dismiss notice">×</button></div>
+        <div class="notice"><span>✦</span><span id="runtime-notice"><strong>Browser preview.</strong> Run outputs are illustrative until this webapp is opened inside DSS.</span><button id="dismiss-notice" aria-label="Dismiss notice">×</button></div>
 
         <section class="batch-toolbar hidden" id="batch-toolbar" aria-live="polite">
           <span id="selection-count">0 selected</span>

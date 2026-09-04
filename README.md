@@ -36,7 +36,9 @@ renaming, and deleting a notebook also operate on native DSS notebooks. The
 left-hand folder tree stays browser-local by design: DSS has no notebook-folder
 structure to mirror.
 
-Python cells receive a non-executing syntax check while typing. Native kernel
-execution and SQL warehouse execution are deliberately not simulated yet; they
-need a tested DSS execution bridge before the Run controls can return real
-output. See [architecture](docs/architecture.md) for the remaining work.
+Python cells receive a non-executing syntax check while typing. Inside DSS,
+Run, Run All, and the run shortcuts connect to the notebook’s actual Jupyter
+kernel and persist stdout, tracebacks, and text display results into the native
+notebook. SQL cells are sent through the DSS `%sql` magic; an SQL connection or
+warehouse selector remains the next integration step. See
+[architecture](docs/architecture.md) for remaining work.
