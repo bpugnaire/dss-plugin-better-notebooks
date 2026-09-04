@@ -725,4 +725,7 @@ async function startDssIntegration() {
 }
 state.activeNotebookId = state.notebooks.activeNotebookId || state.notebooks.notebooks[0].id;
 state.cells = activeNotebook().cells;
-resetHistory(); renderWorkspace(); startDssIntegration();
+// Start native discovery before constructing editors. A third-party editor
+// rendering failure must never leave the page looking like browser preview
+// while silently preventing the DSS project handshake.
+resetHistory(); startDssIntegration(); renderWorkspace();
