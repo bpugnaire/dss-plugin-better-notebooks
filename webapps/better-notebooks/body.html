@@ -1,0 +1,117 @@
+    <div class="app-shell">
+      <aside class="sidebar explorer-view" aria-label="Notebook navigation">
+        <nav class="sidebar-rail" aria-label="Sidebar views">
+          <button class="rail-button active" id="explorer-view-button" title="Notebook explorer" aria-label="Notebook explorer">▱</button>
+          <button class="rail-button" id="outline-view-button" title="Notebook outline" aria-label="Notebook outline">☷</button>
+          <button class="rail-collapse" id="sidebar-collapse-button" title="Collapse sidebar" aria-label="Collapse sidebar">‹</button>
+        </nav>
+        <div class="sidebar-content">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">✦</span>
+          <span>better notebooks</span>
+        </div>
+
+        <button class="new-button" id="new-notebook-button"><span>+</span> New notebook</button>
+
+        <div class="sidebar-section explorer-section">
+          <div class="section-label"><button class="section-toggle" id="notebooks-section-toggle" aria-expanded="true"><span>NOTEBOOKS</span><span>⌄</span></button><div class="explorer-actions"><button class="icon-button small" id="new-folder-button" title="New theoretical folder" aria-label="New folder">▱+</button><button class="icon-button small" id="copy-notebook-button" title="Copy active notebook" aria-label="Copy active notebook">⧉</button><button class="icon-button small" id="delete-notebook-button" title="Delete active notebook" aria-label="Delete active notebook">⌫</button></div></div>
+          <div class="notebook-tree-scroll"><div id="notebook-tree" class="notebook-list"></div></div>
+        </div>
+
+        <div class="sidebar-section recents-section collapsed">
+          <div class="section-label"><button class="section-toggle" id="recents-section-toggle" aria-expanded="false"><span>RECENTS</span><span>⌄</span></button></div>
+          <div id="recent-notebook-list" class="notebook-list"></div>
+        </div>
+
+        <div class="sidebar-section outline-section">
+          <div class="section-label"><span>NOTEBOOK OUTLINE</span><button class="icon-button small" id="outline-toggle" aria-label="Toggle notebook outline">⌄</button></div>
+          <div id="outline-list"></div>
+        </div>
+
+        <div class="sidebar-footer">
+          <div class="offline-dot"></div>
+          <span>Local prototype</span>
+        </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="crumbs"><span>Projects</span><span>/</span><span>Customer Analytics</span><span>/</span><strong id="crumb-notebook-name">Explore customer behaviour</strong></div>
+          <div class="topbar-actions">
+            <span class="saved-state" id="saved-state">Saved locally</span>
+            <button class="button ghost" id="settings-button">⚙ Settings</button>
+            <button class="avatar" aria-label="Profile">BP</button>
+          </div>
+        </header>
+        <nav class="notebook-tabs" id="notebook-tabs" aria-label="Open notebook tabs"></nav>
+
+        <section class="notebook-head">
+          <div>
+            <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill">● Idle</span><button class="executor-selector" id="executor-selector">Python 3.11 <span>⌄</span></button><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
+            <h1 class="notebook-title-row"><span id="notebook-title" tabindex="0" title="Double-click to rename">Explore customer behaviour</span><button class="rename-notebook" id="rename-notebook-button" title="Rename notebook" aria-label="Rename notebook">✎</button></h1>
+            <p>Prototype notebook · Local state only</p>
+          </div>
+          <div class="head-actions">
+            <button class="button primary" id="run-all"><span>▶</span> Run all</button>
+          </div>
+        </section>
+
+        <div class="notice"><span>✦</span><span><strong>Prototype mode.</strong> Cell changes are saved in your browser. Dataiku execution, datasets, and AI suggestions will connect later.</span><button id="dismiss-notice" aria-label="Dismiss notice">×</button></div>
+
+        <section class="batch-toolbar hidden" id="batch-toolbar" aria-live="polite">
+          <span id="selection-count">0 selected</span>
+          <div class="toolbar-divider"></div>
+          <button data-batch-action="run">▶ Run</button>
+          <button data-batch-action="duplicate">⧉ Duplicate</button>
+          <button data-batch-action="copy">▣ Copy</button>
+          <button data-batch-action="cut">✂ Cut</button>
+          <button data-batch-action="delete" class="danger">⌫ Delete</button>
+          <button data-batch-action="clear">Clear selection</button>
+        </section>
+
+        <section id="cells" class="cells" aria-label="Notebook cells"></section>
+      </main>
+
+      <aside class="data-panel" aria-label="Project datasets">
+        <div class="data-panel-title"><span>PROJECT DATASETS</span><button class="icon-button small" aria-label="Refresh datasets">↻</button></div>
+        <label class="dataset-search"><span>⌕</span><input id="dataset-search" type="search" placeholder="Search datasets" /></label>
+        <div id="dataset-list" class="dataset-list"></div>
+        <div class="dataset-hint"><strong>Tip</strong><span>Click a dataset to add its Dataiku loading snippet to the notebook.</span></div>
+      </aside>
+    </div>
+    <template id="cell-template">
+      <article class="cell">
+        <div class="cell-rail"><button class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</button><input class="cell-check" type="checkbox" aria-label="Select cell" /></div>
+        <div class="cell-content">
+          <header class="cell-header"><div class="cell-type"><button class="cell-type-selector" title="Change cell type"><span class="cell-language"></span><span class="type-chevron">⌄</span></button><div class="type-options" role="menu"><button data-cell-type="python" role="menuitem"><span>⌘</span> Python</button><button data-cell-type="sql" role="menuitem"><span>▤</span> SQL</button><button data-cell-type="markdown" role="menuitem"><span>¶</span> Markdown</button></div></div><div class="cell-actions"><button class="run-cell" title="Run cell">▶</button><button class="ai-help" title="Ask AI for help" aria-label="Ask AI for help">✦</button><button class="delete-cell icon-delete" title="Delete cell" aria-label="Delete cell">⌫</button><button class="more-cell" title="More actions" aria-label="More actions">⋮</button></div></header>
+          <textarea class="code-input" spellcheck="false" aria-label="Cell code"></textarea>
+          <div class="cell-output"></div>
+          <div class="cell-footer"><span class="execution-meta"></span></div>
+        </div>
+      </article>
+    </template>
+    <div class="modal-backdrop hidden" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <section class="settings-modal-card">
+        <header><div><span class="eyebrow">NOTEBOOK SETTINGS</span><h2 id="settings-title">Keyboard shortcuts</h2></div><button class="icon-button" id="close-settings" aria-label="Close settings">×</button></header>
+        <p>Use familiar notebook shortcuts to stay in flow.</p>
+        <div class="shortcut-grid">
+          <div><span>Run current cell</span><kbd>⇧</kbd><kbd>↵</kbd></div>
+          <div><span>Run cell / selection</span><kbd>⌘</kbd><kbd>↵</kbd></div>
+          <div><span>Undo cell change</span><kbd>⌘</kbd><kbd>Z</kbd></div>
+          <div><span>Copy selected cells</span><kbd>⌘</kbd><kbd>C</kbd></div>
+          <div><span>Cut selected cells</span><kbd>⌘</kbd><kbd>X</kbd></div>
+          <div><span>Paste copied cells</span><kbd>⌘</kbd><kbd>V</kbd></div>
+          <div><span>Delete selected cells</span><kbd>⌫</kbd></div>
+        </div>
+        <footer><button class="button primary" id="done-settings">Done</button></footer>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="folder-modal" role="dialog" aria-modal="true" aria-labelledby="folder-title">
+      <form class="folder-modal-card" id="folder-form">
+        <header><div><span class="eyebrow">THEORETICAL FOLDER</span><h2 id="folder-title">Create folder</h2></div><button class="icon-button" type="button" id="close-folder-modal" aria-label="Close folder dialog">×</button></header>
+        <p>Folders organize this workspace only; they do not alter Dataiku’s notebook structure.</p>
+        <label>Folder name<input id="folder-name-input" required maxlength="50" placeholder="e.g. Explorations" /></label>
+        <footer><button class="button ghost" type="button" id="cancel-folder">Cancel</button><button class="button primary" type="submit">Create folder</button></footer>
+      </form>
+    </div>

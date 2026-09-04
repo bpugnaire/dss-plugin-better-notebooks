@@ -1,0 +1,14 @@
+{
+  "id": "better-notebooks",
+  "version": "0.1.0",
+  "meta": {
+    "label": "Better Notebooks",
+    "category": "Developer tools",
+    "description": "A modern, Databricks-inspired notebook workspace for Dataiku projects.",
+    "author": "Better Notebooks contributors",
+    "icon": "icon-book",
+    "licenseInfo": "Apache-2.0",
+    "tags": ["notebooks", "developer-tools", "productivity"],
+    "supportLevel": "NOT_SUPPORTED"
+  }
+}

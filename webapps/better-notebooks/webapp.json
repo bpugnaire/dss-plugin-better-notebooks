@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "label": "Better Notebooks",
+    "description": "A modern notebook workspace prototype for a Dataiku project.",
+    "icon": "icon-book"
+  },
+  "baseType": "STANDARD",
+  "hasBackend": false,
+  "noJSSecurity": false,
+  "standardWebAppLibraries": ["jquery", "dataiku"],
+  "params": [
+    {
+      "name": "storage_namespace",
+      "label": "Browser storage namespace",
+      "type": "STRING",
+      "defaultValue": "better-notebooks"
+    }
+  ],
+  "roles": []
+}
