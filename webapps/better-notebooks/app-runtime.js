@@ -244,6 +244,11 @@ function setSavedState(message, isError = false) {
   status.classList.toggle('error', isError);
 }
 function sourceText(source) { return Array.isArray(source) ? source.join('') : String(source || ''); }
+function outputText(value) {
+  // Jupyter tracebacks can retain ANSI terminal colour sequences. They are not
+  // useful in a browser output block and make long tracebacks unreadable.
+  return sourceText(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+}
 function sourceLines(source) { return source ? source.match(/[^\n]*\n|[^\n]+/g) || [] : []; }
 function dssDocumentFor(notebook) {
   const document = structuredClone(notebook.dssContent || { nbformat: 4, nbformat_minor: 5, metadata: {} });
@@ -405,9 +410,9 @@ function renderDatasets(filter = '') {
 function outputMarkup(kind) {
   if (kind && typeof kind === 'object' && Array.isArray(kind.outputs)) {
     const content = kind.outputs.map(output => {
-      if (output.output_type === 'stream') return `<pre class="runtime-output stream">${escapeHTML(sourceText(output.text))}</pre>`;
-      if (output.output_type === 'error') return `<pre class="runtime-output error-output">${escapeHTML([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n'))}</pre>`;
-      const text = sourceText(output.data?.['text/plain']);
+      if (output.output_type === 'stream') return `<pre class="runtime-output stream">${escapeHTML(outputText(output.text))}</pre>`;
+      if (output.output_type === 'error') return `<pre class="runtime-output error-output">${escapeHTML(outputText([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n')))}</pre>`;
+      const text = outputText(output.data?.['text/plain']);
       return text ? `<pre class="runtime-output">${escapeHTML(text)}</pre>` : '';
     }).join('');
     return content || '<div class="query-output success">Cell completed with no display output</div>';
