@@ -32,7 +32,22 @@ const PYTHON_HOVERS = {
   range: 'range(start, stop, step) → integer sequence',
   sorted: 'sorted(iterable) → new sorted list',
   dataiku: 'Dataiku Python API module',
+  Dataset: 'dataiku.Dataset(name) → handle to a DSS project dataset',
+  get_dataframe: 'get_dataframe(...) → pandas.DataFrame loaded from the DSS dataset',
+  DataFrame: 'pandas.DataFrame(data) → labeled two-dimensional tabular data',
+  head: 'head(n=5) → first n rows of a DataFrame or Series',
+  describe: 'describe(...) → descriptive statistics for a DataFrame or Series',
+  groupby: 'groupby(by, ...) → groups a DataFrame for aggregation',
+  merge: 'merge(right, ...) → joins two DataFrames',
+  read_csv: 'pandas.read_csv(path, ...) → DataFrame loaded from CSV data',
 };
+
+function completeWithTab(view) {
+  if (acceptCompletion(view)) return true;
+  const cursor = view.state.selection.main.head;
+  const token = view.state.sliceDoc(Math.max(0, cursor - 1), cursor);
+  return /[\w.]/.test(token) ? startCompletion(view) : false;
+}
 
 function completionSource(type, datasets, symbols = [], connections = []) {
   return context => {
@@ -108,7 +123,7 @@ export function mount({ id, parent, source, type, datasets, symbols = [], connec
         keymap.of([
           { key: 'Ctrl-Space', run: startCompletion },
           { key: 'Alt-/', run: startCompletion },
-          { key: 'Tab', run: acceptCompletion },
+          { key: 'Tab', run: completeWithTab },
           { key: 'Shift-Enter', run: () => { onRunAndAdvance(); return true; } },
           { key: 'Mod-Enter', run: () => { onRun(); return true; } },
           indentWithTab, ...closeBracketsKeymap, ...completionKeymap, ...historyKeymap, ...defaultKeymap,

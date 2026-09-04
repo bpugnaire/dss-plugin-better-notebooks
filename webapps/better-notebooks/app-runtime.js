@@ -412,7 +412,14 @@ function symbolsBefore(cellId) {
   state.cells.slice(0, Math.max(cellIndex(cellId), 0)).filter(cell => cell.type === 'python').forEach(cell => {
     cell.source.matchAll(/^\s*def\s+([A-Za-z_]\w*)\s*(\([^\n)]*\))/gm).forEach(match => symbols.set(match[1], { name: match[1], kind: 'function', detail: `${match[1]}${match[2]} · defined above` }));
     cell.source.matchAll(/^\s*class\s+([A-Za-z_]\w*)/gm).forEach(match => symbols.set(match[1], { name: match[1], kind: 'class', detail: `${match[1]} · class defined above` }));
-    cell.source.matchAll(/^\s*([A-Za-z_]\w*)\s*=(?!=)/gm).forEach(match => symbols.set(match[1], { name: match[1], kind: 'variable', detail: `${match[1]} · variable defined above` }));
+    cell.source.matchAll(/^\s*([A-Za-z_]\w*)\s*=(?!=)\s*(.+)$/gm).forEach(match => {
+      const rhs = match[2];
+      const type = /dataiku\.Dataset\s*\(/.test(rhs) ? 'dataiku.Dataset'
+        : /(?:\.get_dataframe\s*\(|pd\.DataFrame\s*\(|pandas\.DataFrame\s*\()/.test(rhs) ? 'pandas.DataFrame'
+          : /SQLExecutor2\s*\(/.test(rhs) ? 'dataiku.SQLExecutor2'
+            : /\[.*\]/.test(rhs) ? 'list' : /\{.*\}/.test(rhs) ? 'dict' : 'variable';
+      symbols.set(match[1], { name: match[1], kind: 'variable', detail: `${match[1]} · ${type} defined above` });
+    });
     cell.source.matchAll(/^\s*(?:from\s+\S+\s+import|import)\s+([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?/gm).forEach(match => { const name = match[2] || match[1]; symbols.set(name, { name, kind: 'variable', detail: `${name} · imported above` }); });
   });
   return [...symbols.values()].sort((left, right) => left.name.localeCompare(right.name));
@@ -546,8 +553,8 @@ function renderCells() {
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output, data.id);
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
-    const meta = node.querySelector('.execution-meta'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
-    node.querySelector('.cell-footer').hidden = !data.meta;
+    const meta = node.querySelector('.execution-meta-top'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
+    node.querySelector('.cell-footer').hidden = true;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     if (data.running) { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
     cellsEl.appendChild(node);
