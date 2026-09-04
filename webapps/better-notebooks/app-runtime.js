@@ -106,12 +106,20 @@ function undo() {
   save(false); renderCells();
 }
 function escapeHTML(value) { return value.replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[ch]); }
+function dssBackendBridge() {
+  // DSS exposes this method on its injected `dataiku` API. The legacy global
+  // alias exists in some DSS pages, but is not guaranteed to be a window
+  // property (it is declared by DSS's inline bootstrap script).
+  if (typeof dataiku !== 'undefined' && typeof dataiku.getWebAppBackendUrl === 'function') return dataiku.getWebAppBackendUrl.bind(dataiku);
+  if (typeof getWebAppBackendUrl === 'function') return getWebAppBackendUrl;
+  return null;
+}
 function dssBackendUrl(path) {
-  const bridge = window.getWebAppBackendUrl;
-  if (typeof bridge !== 'function') throw new Error('DSS webapp bridge is unavailable.');
+  const bridge = dssBackendBridge();
+  if (!bridge) throw new Error('DSS webapp bridge is unavailable.');
   return bridge(`/${String(path).replace(/^\/+/, '')}`);
 }
-function isDssWebappRuntime() { return typeof window.getWebAppBackendUrl === 'function'; }
+function isDssWebappRuntime() { return Boolean(dssBackendBridge()); }
 async function dssRequest(path, options = {}) {
   const response = await fetch(dssBackendUrl(path), {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
