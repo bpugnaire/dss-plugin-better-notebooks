@@ -7,9 +7,17 @@ import { linter, setDiagnostics } from '@codemirror/lint';
 import { python } from '@codemirror/lang-python';
 import { sql } from '@codemirror/lang-sql';
 import { markdown } from '@codemirror/lang-markdown';
-import { oneDark } from '@codemirror/theme-one-dark';
 
 const editors = new Map();
+const notebookLightTheme = EditorView.theme({
+  '&': { backgroundColor: '#ffffff', color: '#2d2932' },
+  '.cm-content': { caretColor: '#5d42c6' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#5d42c6' },
+  '.cm-gutters': { backgroundColor: '#ffffff', color: '#aaa3b0', border: 'none' },
+  '.cm-activeLine': { backgroundColor: '#faf8ff' },
+  '.cm-activeLineGutter': { backgroundColor: '#f5f1ff' },
+  '.cm-selectionBackground, ::selection': { backgroundColor: '#dfd6ff !important' },
+}, { dark: false });
 
 const PYTHON_WORDS = [
   'abs', 'all', 'any', 'bool', 'dict', 'enumerate', 'filter', 'float', 'int', 'len', 'list', 'map', 'max', 'min',
@@ -80,7 +88,7 @@ export function mount({ id, parent, source, type, datasets, onChange, onRun, onR
     state: EditorState.create({
       doc: source,
       extensions: [
-        history(), language, oneDark, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(),
+        history(), language, notebookLightTheme, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(),
         autocompletion({ override: [completionSource(type, datasets)], activateOnTyping: true }), hoverFor(datasets),
         linter(() => []),
         keymap.of([

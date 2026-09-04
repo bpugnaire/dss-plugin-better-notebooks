@@ -18,7 +18,9 @@ function loadEditorBundle() {
   if (window.BetterNotebookEditor) return Promise.resolve(window.BetterNotebookEditor);
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = new URL('vendor/codemirror.js', document.baseURI).href;
+    script.src = typeof getWebAppBackendUrl === 'function'
+      ? getWebAppBackendUrl('editor-bundle')
+      : new URL('vendor/codemirror.js', document.baseURI).href;
     script.onload = () => window.BetterNotebookEditor ? resolve(window.BetterNotebookEditor) : reject(new Error('CodeMirror bundle did not expose its editor API.'));
     script.onerror = () => reject(new Error('CodeMirror bundle could not be loaded.'));
     document.head.appendChild(script);
