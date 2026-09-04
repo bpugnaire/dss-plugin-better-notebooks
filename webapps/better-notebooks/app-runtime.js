@@ -415,14 +415,33 @@ function renderDatasets(filter = '') {
 }
 function outputMarkup(kind) {
   if (kind && typeof kind === 'object' && Array.isArray(kind.outputs)) {
-    const content = kind.outputs.map(output => {
-      if (output.output_type === 'stream') return `<pre class="runtime-output stream">${escapeHTML(outputText(output.text))}</pre>`;
-      if (output.output_type === 'error') return `<pre class="runtime-output error-output">${escapeHTML(outputText([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n')))}</pre>`;
+    const rendered = [];
+    let streamText = '';
+    const flushStream = () => {
+      if (!streamText) return;
+      rendered.push(`<pre class="runtime-output stream">${escapeHTML(streamText)}</pre>`);
+      streamText = '';
+    };
+    kind.outputs.forEach(output => {
+      if (output.output_type === 'stream') {
+        streamText += outputText(output.text);
+        return;
+      }
+      flushStream();
+      if (output.output_type === 'error') {
+        rendered.push(`<pre class="runtime-output error-output">${escapeHTML(outputText([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n')))}</pre>`);
+        return;
+      }
       const dataframe = dataframeMarkup(output.data?.['text/html']);
-      if (dataframe) return dataframe;
+      if (dataframe) {
+        rendered.push(dataframe);
+        return;
+      }
       const text = outputText(output.data?.['text/plain']);
-      return text ? `<pre class="runtime-output">${escapeHTML(text)}</pre>` : '';
-    }).join('');
+      if (text) rendered.push(`<pre class="runtime-output">${escapeHTML(text)}</pre>`);
+    });
+    flushStream();
+    const content = rendered.join('');
     return content || '<div class="query-output success">Cell completed with no display output</div>';
   }
   if (kind === 'query') return `<div class="query-output success">Query completed · 5 rows returned</div>`;
