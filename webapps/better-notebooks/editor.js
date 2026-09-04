@@ -111,11 +111,13 @@ export function mount({ id, parent, source, type, datasets, onChange, onRun, onR
 
 export function setDiagnostic(id, diagnostic) {
   const view = editors.get(id); if (!view) return;
-  const diagnostics = diagnostic ? (() => {
-    const line = Math.min(Math.max(diagnostic.line || 1, 1), view.state.doc.lines);
-    const from = Math.min(view.state.doc.line(line).from + Math.max((diagnostic.column || 1) - 1, 0), view.state.doc.length);
-    return [{ from, to: Math.min(from + 1, view.state.doc.length), severity: 'error', message: diagnostic.message || 'Syntax error' }];
-  })() : [];
+  // Do not dispatch an empty lint update. With the bundled editor this is not
+  // needed to clear a new editor and, on DSS's browser runtime, dispatching it
+  // can abort the entire render loop after the first native notebook cell.
+  if (!diagnostic) return;
+  const line = Math.min(Math.max(diagnostic.line || 1, 1), view.state.doc.lines);
+  const from = Math.min(view.state.doc.line(line).from + Math.max((diagnostic.column || 1) - 1, 0), view.state.doc.length);
+  const diagnostics = [{ from, to: Math.min(from + 1, view.state.doc.length), severity: 'error', message: diagnostic.message || 'Syntax error' }];
   view.dispatch({ effects: setDiagnostics(view.state, diagnostics) });
 }
 
