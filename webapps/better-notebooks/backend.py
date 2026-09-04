@@ -100,12 +100,20 @@ def get_project_context():
         except Exception:
             pass
     try:
-        for connection in dataiku.api_client().list_connections():
+        raw_connections = dataiku.api_client().list_connections()
+        for connection in raw_connections.values() if isinstance(raw_connections, dict) else raw_connections:
+            if isinstance(connection, str):
+                add_connection(connection)
+                continue
             name = connection.get("name") or connection.get("connectionName")
             add_connection(name, connection.get("type") or connection.get("connectionType") or "SQL")
     except Exception:
         # Connection discovery can be restricted independently from dataset access.
         pass
+    # This built-in DSS connection is present on local installations and is
+    # intended for project-managed files. It is not always returned by the
+    # connection-list API for non-admin users.
+    add_connection("filesystem_managed", "Filesystem")
     return jsonify({
         "project": {"key": summary["projectKey"], "name": summary.get("name") or summary["projectKey"]},
         "datasets": sorted(datasets, key=lambda item: item["name"].lower()),
@@ -224,9 +232,11 @@ def create_managed_dataset():
     if not NOTEBOOK_NAME.match(name):
         return jsonify({"error": "Dataset names may contain letters, numbers, spaces, dots, dashes, and underscores."}), 400
     if not connection:
-        return jsonify({"error": "Select a managed-dataset connection first."}), 400
+        connection = "filesystem_managed"
     try:
-        current_project().new_managed_dataset(name, connection).create()
+        builder = current_project().new_managed_dataset(name)
+        builder.with_store_into(connection)
+        builder.create()
     except Exception as error:
         return jsonify({"error": "Could not create the managed dataset: %s" % error}), 400
     return jsonify({"dataset": {"name": name, "connection": connection}}), 201

@@ -12,7 +12,7 @@ let DATASETS = [
   { name: 'product_catalog', kind: 'blue' },
   { name: 'support_tickets', kind: 'orange' },
 ];
-const projectContext = { name: 'Current project', key: '', isDss: false, connections: [], sqlConnection: '' };
+const projectContext = { name: 'Current project', key: '', isDss: false, connections: [], sqlConnection: '', managedConnection: 'filesystem_managed' };
 const dss = { enabled: false, loading: false, workspaceLoaded: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
 let dssSaveTimer;
 const diagnosticsTimers = new Map();
@@ -412,7 +412,9 @@ async function loadProjectContext() {
       columns: Array.isArray(dataset.columns) ? dataset.columns : [],
     }));
     projectContext.connections = Array.isArray(payload.connections) ? payload.connections : [];
-    if (!projectContext.connections.some(connection => connection.name === projectContext.sqlConnection)) projectContext.sqlConnection = projectContext.connections[0]?.name || '';
+    const sqlConnections = projectContext.connections.filter(connection => connection.type !== 'Filesystem');
+    if (!sqlConnections.some(connection => connection.name === projectContext.sqlConnection)) projectContext.sqlConnection = sqlConnections[0]?.name || '';
+    projectContext.managedConnection = projectContext.sqlConnection || projectContext.connections.find(connection => connection.name === 'filesystem_managed')?.name || 'filesystem_managed';
     renderProjectContext();
     renderDatasets(document.querySelector('#dataset-search').value);
     renderSqlConnectionSelector();
@@ -475,10 +477,10 @@ function renderLinkedDatasets() {
 function renderSqlConnectionSelector() {
   const selector = document.querySelector('#sql-executor-selector');
   if (!selector) return;
-  const connections = projectContext.connections;
+  const connections = projectContext.connections.filter(connection => connection.type !== 'Filesystem');
   selector.innerHTML = connections.length
     ? connections.map(connection => `<option value="${escapeHTML(connection.name)}">${escapeHTML(connection.name)}</option>`).join('')
-    : '<option value="">SQL connection</option>';
+    : '<option value="">No SQL connection</option>';
   selector.value = projectContext.sqlConnection;
   selector.title = connections.length ? 'SQL connection for SQL cells' : 'No SQL connection available in this project';
 }
@@ -817,6 +819,7 @@ document.querySelector('#executor-selector').addEventListener('change', event =>
 });
 document.querySelector('#sql-executor-selector').addEventListener('change', event => {
   projectContext.sqlConnection = event.target.value;
+  if (projectContext.sqlConnection) projectContext.managedConnection = projectContext.sqlConnection;
   setSavedState(projectContext.sqlConnection ? `SQL connection: ${projectContext.sqlConnection}` : 'No SQL connection selected');
 });
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
@@ -891,10 +894,6 @@ function sortDataframe(table, column) {
 }
 async function createDatasetFromDataframe(cellId) {
   if (!dss.enabled || !projectContext.isDss) { setSavedState('Create datasets is available inside DSS', true); return; }
-  if (!projectContext.sqlConnection) {
-    const message = 'No managed connection is available in this project. Add or authorize a SQL/filesystem connection in DSS, then refresh project datasets.';
-    setSavedState(message, true); window.alert(message); return;
-  }
   const cell = getCell(cellId);
   const inferred = cell?.source.match(/([A-Za-z_]\w*)\.(?:head|tail|sample|describe)\s*\(/)?.[1]
     || cell?.source.match(/^\s*([A-Za-z_]\w*)\s*=/m)?.[1] || 'df';
@@ -902,7 +901,7 @@ async function createDatasetFromDataframe(cellId) {
   if (!datasetName) return;
   try {
     setSavedState('Creating managed dataset in DSS…');
-    await dssRequest('datasets', { method: 'POST', body: JSON.stringify({ name: datasetName, connection: projectContext.sqlConnection }) });
+    await dssRequest('datasets', { method: 'POST', body: JSON.stringify({ name: datasetName, connection: projectContext.managedConnection }) });
     const writeCell = newCell('python');
     writeCell.source = `# Materialize ${inferred} as the managed dataset ${datasetName}\noutput_dataset = dataiku.Dataset("${datasetName}")\noutput_dataset.write_with_schema(${inferred})`;
     insertAfter(cellId, writeCell);
