@@ -13,7 +13,7 @@ let DATASETS = [
   { name: 'support_tickets', kind: 'orange' },
 ];
 const projectContext = { name: 'Current project', key: '', isDss: false };
-const dss = { enabled: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
+const dss = { enabled: false, loading: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
 let dssSaveTimer;
 const diagnosticsTimers = new Map();
 
@@ -145,6 +145,11 @@ function jupyterOutput(message) {
   if (type === 'display_data' || type === 'update_display_data') return { output_type: 'display_data', data: content.data || {}, metadata: content.metadata || {} };
   return null;
 }
+function finishJupyterExecution(kernel, messageId) {
+  const request = kernel.pending.get(messageId); if (!request) return;
+  clearTimeout(request.timeout); kernel.pending.delete(messageId); setKernelStatus('Connected', 'connected');
+  request.resolve({ outputs: request.outputs, executionCount: request.executionCount });
+}
 function handleJupyterMessage(event) {
   let message;
   try { message = JSON.parse(event.data); } catch { return; }
@@ -154,10 +159,14 @@ function handleJupyterMessage(event) {
   if (!request) return;
   const output = jupyterOutput(message);
   if (output) request.outputs.push(output);
-  if (message.header?.msg_type === 'execute_reply') request.executionCount = message.content?.execution_count;
+  if (message.header?.msg_type === 'execute_reply') {
+    request.executionCount = message.content?.execution_count;
+    // DSS/Jupyter normally follows with an IOPub idle message. Guard against
+    // proxies that omit it so a completed cell cannot remain "Running…".
+    setTimeout(() => finishJupyterExecution(kernel, message.parent_header?.msg_id), 500);
+  }
   if (message.header?.msg_type === 'status' && message.content?.execution_state === 'idle') {
-    clearTimeout(request.timeout); kernel.pending.delete(message.parent_header?.msg_id); setKernelStatus('Connected', 'connected');
-    request.resolve({ outputs: request.outputs, executionCount: request.executionCount });
+    finishJupyterExecution(kernel, message.parent_header?.msg_id);
   }
 }
 async function connectDssKernel(notebook) {
@@ -290,6 +299,7 @@ async function loadDssNotebook(notebook) {
 }
 async function loadDssWorkspace() {
   if (!isDssWebappRuntime()) return;
+  dss.loading = true;
   try {
     const [notebookPayload, runtimePayload] = await Promise.all([
       dssRequest('notebooks'), dssRequest('python-runtimes'),
@@ -301,6 +311,7 @@ async function loadDssWorkspace() {
       updatedAt: 0, folderId: null, remote: true, loaded: false, runtimeId: runtimeIdFor(item.kernelSpec),
     }));
     if (!notebooks.length) {
+      dss.loading = false;
       setSavedState('No DSS notebooks yet');
       renderRuntimeSelector();
       return;
@@ -310,9 +321,10 @@ async function loadDssWorkspace() {
     await loadDssNotebook(notebooks[0]);
     state.cells = notebooks[0].cells;
     dss.activeRuntimeId = notebooks[0].runtimeId;
-    resetHistory(); renderRuntimeSelector(); renderWorkspace();
+    dss.loading = false; resetHistory(); renderRuntimeSelector(); renderWorkspace();
     setSavedState('Loaded from DSS');
   } catch (error) {
+    dss.loading = false;
     console.warn('Better Notebooks could not load native DSS notebooks.', error);
     setSavedState('DSS notebook load failed', true);
   }
@@ -539,6 +551,7 @@ function focusCell(id, preventScroll = false) { requestAnimationFrame(() => Bett
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
 async function runCell(id) {
   const cell = getCell(id); if (!cell) return;
+  if (dss.loading) { setSavedState('Waiting for the native DSS notebook to finish loading…'); return; }
   state.activeCellId = id;
   if (cell.type === 'markdown') { cell.meta = 'Rendered just now'; save(); renderCells(); return; }
   if (!activeNotebook().remote) { cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : 'table'; save(); renderCells(); return; }
@@ -674,6 +687,12 @@ document.addEventListener('keydown', async event => {
   if (event.key === 'Backspace' && state.selected.size && !document.activeElement.matches('.code-input')) { event.preventDefault(); deleteSelected(); }
 });
 
+async function startDssIntegration() {
+  const deadline = Date.now() + 5000;
+  while (!isDssWebappRuntime() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  if (!isDssWebappRuntime()) return;
+  await Promise.all([loadProjectContext(), loadDssWorkspace()]);
+}
 state.activeNotebookId = state.notebooks.activeNotebookId || state.notebooks.notebooks[0].id;
 state.cells = activeNotebook().cells;
-resetHistory(); save(false); renderWorkspace(); loadProjectContext(); loadDssWorkspace();
+resetHistory(); save(false); renderWorkspace(); startDssIntegration();
