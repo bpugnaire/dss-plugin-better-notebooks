@@ -3,7 +3,7 @@ const webappConfig = typeof dataiku !== 'undefined' && typeof dataiku.getWebAppC
 const storageNamespace = String(webappConfig.storage_namespace || 'better-notebooks').replace(/[^a-z0-9_-]/gi, '-');
 const storageKey = suffix => `${storageNamespace}-${suffix}`;
 
-const DATASETS = [
+let DATASETS = [
   { name: 'customers_enriched', kind: 'blue' },
   { name: 'orders_clean', kind: 'orange' },
   { name: 'web_sessions', kind: 'purple' },
@@ -83,6 +83,23 @@ function undo() {
   save(false); renderCells();
 }
 function escapeHTML(value) { return value.replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[ch]); }
+function isDssWebappRuntime() { return typeof getWebAppBackendUrl === 'function'; }
+async function loadProjectDatasets() {
+  if (!isDssWebappRuntime()) return;
+  try {
+    const response = await fetch(getWebAppBackendUrl('project-context/datasets'));
+    if (!response.ok) throw new Error(`Dataset endpoint returned ${response.status}`);
+    const payload = await response.json();
+    if (!Array.isArray(payload.datasets)) throw new Error('Dataset response is invalid');
+    DATASETS = payload.datasets.map((dataset, index) => ({
+      name: dataset.name,
+      kind: ['blue', 'orange', 'purple'][index % 3],
+    }));
+    renderDatasets(document.querySelector('#dataset-search').value);
+  } catch (error) {
+    console.warn('Better Notebooks could not load project datasets; using local examples.', error);
+  }
+}
 function cellIndex(id) { return state.cells.findIndex(cell => cell.id === id); }
 function getCell(id) { return state.cells.find(cell => cell.id === id); }
 function newCell(type = 'python') { return { id: crypto.randomUUID(), type, source: type === 'markdown' ? '## New section' : type === 'sql' ? 'SELECT *\nFROM customers_enriched\nLIMIT 100' : '# Start writing Python', meta: '' }; }
@@ -285,4 +302,4 @@ document.addEventListener('keydown', event => {
 
 state.activeNotebookId = state.notebooks.activeNotebookId || state.notebooks.notebooks[0].id;
 state.cells = activeNotebook().cells;
-resetHistory(); save(false); renderWorkspace();
+resetHistory(); save(false); renderWorkspace(); loadProjectDatasets();

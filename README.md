@@ -29,6 +29,8 @@ needed for the current UI workflow.
 4. Open its settings and keep the default browser storage namespace, or set a
    unique one for an isolated prototype workspace.
 
-The current webapp is deliberately browser-local: seeded datasets, execution,
-and notebooks are illustrative. It does not yet read or modify DSS notebooks.
-See [architecture](docs/architecture.md) for the next implementation phases.
+Inside DSS, the dataset panel now loads the names of datasets visible in the
+current project through a read-only backend endpoint. Notebook state, execution,
+schemas, and outputs remain browser-local illustrative behavior; the component
+does not yet read or modify native DSS notebooks. See
+[architecture](docs/architecture.md) for the next implementation phases.

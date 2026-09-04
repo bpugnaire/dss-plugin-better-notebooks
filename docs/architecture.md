@@ -9,7 +9,9 @@ prototype notebooks, open tabs, and display-only folders.
 
 The current component does **not** replace Dataiku's native notebook editor. It
 is an instantiable project webapp, which is the safe first integration point for
-validating the interaction model and project context.
+validating the interaction model and project context. Its first backend endpoint
+is read-only and lists the datasets visible in the current DSS project; local
+browser preview continues to use seeded example datasets.
 
 ## Runtime boundary
 
@@ -34,7 +36,8 @@ be stored in browser storage.
 
 1. Install this webapp component in a development DSS instance and validate the
    shell, Dataiku sizing, and project-level access.
-2. Add a read-only project-context adapter for datasets and metadata.
+2. Extend the read-only project-context adapter with schemas and dataset
+   permissions as needed.
 3. Prove one supported Python and one supported SQL execution path before
    designing a notebook persistence format.
 4. Replace seeded outputs with normalized execution results, starting with

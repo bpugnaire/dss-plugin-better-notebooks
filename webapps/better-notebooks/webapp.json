@@ -5,7 +5,7 @@
     "icon": "icon-book"
   },
   "baseType": "STANDARD",
-  "hasBackend": false,
+  "hasBackend": true,
   "noJSSecurity": false,
   "standardWebAppLibraries": ["jquery", "dataiku"],
   "params": [
