@@ -11,6 +11,7 @@ let DATASETS = [
   { name: 'support_tickets', kind: 'orange' },
 ];
 const projectContext = { name: 'Current project', key: '', isDss: false };
+const dss = { enabled: false, runtimes: [], activeRuntimeId: 'dss_builtin' };
 
 const TABLE = {
   columns: [['customer_id', 'string'], ['country', 'string'], ['orders', 'int'], ['lifetime_value', 'decimal'], ['last_order', 'date']],
@@ -57,9 +58,14 @@ function loadNotebooks() {
 }
 function activeNotebook() { return state.notebooks.notebooks.find(notebook => notebook.id === state.activeNotebookId); }
 function resetHistory() { state.history = [JSON.stringify(state.cells)]; state.historyIndex = 0; }
-function switchNotebook(id) {
+async function switchNotebook(id) {
   const notebook = state.notebooks.notebooks.find(item => item.id === id); if (!notebook || id === state.activeNotebookId) return;
-  notebook.open = true; state.activeNotebookId = id; state.notebooks.activeNotebookId = id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = null; resetHistory(); persistNotebooks(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'instant' });
+  if (notebook.remote && !notebook.loaded) {
+    setSavedState('Loading notebook from DSS…');
+    try { await loadDssNotebook(notebook); }
+    catch (error) { setSavedState('DSS notebook load failed', true); console.warn(error); return; }
+  }
+  notebook.open = true; state.activeNotebookId = id; state.notebooks.activeNotebookId = id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = null; dss.activeRuntimeId = notebook.runtimeId || 'dss_builtin'; resetHistory(); if (!notebook.remote) persistNotebooks(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'instant' });
 }
 function persistNotebooks() { localStorage.setItem(storageKey('notebooks'), JSON.stringify(state.notebooks)); }
 function save(recordHistory = true) {
@@ -72,9 +78,7 @@ function save(recordHistory = true) {
       state.historyIndex = state.history.length - 1;
     }
   }
-  const status = document.querySelector('#saved-state');
-  status.textContent = 'Saved locally';
-  setTimeout(() => { status.textContent = 'Saved locally'; }, 400);
+  setSavedState(activeNotebook().remote ? 'DSS notebook · changes not saved yet' : 'Saved locally');
 }
 function undo() {
   if (state.historyIndex <= 0) return;
@@ -85,13 +89,87 @@ function undo() {
 }
 function escapeHTML(value) { return value.replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[ch]); }
 function isDssWebappRuntime() { return typeof getWebAppBackendUrl === 'function'; }
+async function dssRequest(path, options = {}) {
+  const response = await fetch(getWebAppBackendUrl(path), {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `DSS request failed (${response.status})`);
+  return payload;
+}
+function setSavedState(message, isError = false) {
+  const status = document.querySelector('#saved-state');
+  status.textContent = message;
+  status.classList.toggle('error', isError);
+}
+function sourceText(source) { return Array.isArray(source) ? source.join('') : String(source || ''); }
+function cellsFromDss(raw) {
+  return (raw.cells || []).map(cell => ({
+    id: crypto.randomUUID(),
+    type: cell.cell_type === 'markdown' ? 'markdown' : 'python',
+    source: sourceText(cell.source),
+    meta: cell.execution_count ? `Previously run · #${cell.execution_count}` : '',
+    output: '',
+    dssCell: cell,
+  }));
+}
+function runtimeIdFor(kernelSpec) {
+  const name = kernelSpec?.name || '';
+  if (name === 'python3') return 'dss_builtin';
+  const match = name.match(/^py-dku-venv-(.+)$/);
+  return match ? match[1] : 'dss_builtin';
+}
+function renderRuntimeSelector() {
+  const selector = document.querySelector('#executor-selector');
+  const runtimes = dss.runtimes.length ? dss.runtimes : [{ id: 'dss_builtin', label: 'DSS built-in Python' }];
+  selector.innerHTML = runtimes.map(runtime => `<option value="${escapeHTML(runtime.id)}">${escapeHTML(runtime.label)}</option>`).join('');
+  selector.value = runtimes.some(runtime => runtime.id === dss.activeRuntimeId) ? dss.activeRuntimeId : 'dss_builtin';
+}
+async function loadDssNotebook(notebook) {
+  const payload = await dssRequest(`notebooks/${encodeURIComponent(notebook.name)}`);
+  notebook.dssContent = payload.notebook;
+  notebook.cells = cellsFromDss(payload.notebook);
+  notebook.loaded = true;
+  notebook.language = 'PYTHON';
+  notebook.runtimeId = runtimeIdFor(payload.notebook.metadata?.kernelspec);
+}
+async function loadDssWorkspace() {
+  if (!isDssWebappRuntime()) return;
+  try {
+    const [notebookPayload, runtimePayload] = await Promise.all([
+      dssRequest('notebooks'), dssRequest('python-runtimes'),
+    ]);
+    dss.enabled = true;
+    dss.runtimes = runtimePayload.runtimes || [];
+    const notebooks = (notebookPayload.notebooks || []).map((item, index) => ({
+      id: item.name, name: item.name, language: 'PYTHON', cells: [], open: index === 0,
+      updatedAt: 0, folderId: null, remote: true, loaded: false, runtimeId: runtimeIdFor(item.kernelSpec),
+    }));
+    if (!notebooks.length) {
+      setSavedState('No DSS notebooks yet');
+      renderRuntimeSelector();
+      return;
+    }
+    state.notebooks = { activeNotebookId: notebooks[0].id, folders: [], notebooks };
+    state.activeNotebookId = notebooks[0].id;
+    await loadDssNotebook(notebooks[0]);
+    state.cells = notebooks[0].cells;
+    dss.activeRuntimeId = notebooks[0].runtimeId;
+    resetHistory(); renderRuntimeSelector(); renderWorkspace();
+    setSavedState('Loaded from DSS');
+  } catch (error) {
+    console.warn('Better Notebooks could not load native DSS notebooks.', error);
+    setSavedState('DSS notebook load failed', true);
+  }
+}
 function renderProjectContext() {
   document.querySelector('#crumb-project-name').textContent = projectContext.name;
   document.querySelector('#datasets-panel-title').textContent = projectContext.key
     ? `${projectContext.name.toUpperCase()} DATASETS`
     : 'PROJECT DATASETS';
   document.querySelector('#notebook-subtitle').textContent = projectContext.isDss
-    ? `${projectContext.name} · Browser-local notebook state`
+    ? `${projectContext.name} · Native DSS notebook view`
     : 'Browser-local notebook workspace';
 }
 async function loadProjectContext() {
@@ -195,6 +273,8 @@ function renderNotebookNavigation() {
   document.querySelector('#notebook-title').textContent = notebook.name;
   document.querySelector('#crumb-notebook-name').textContent = notebook.name;
   document.querySelector('.notebook-head .eyebrow').firstChild.textContent = `${notebook.language} NOTEBOOK `;
+  dss.activeRuntimeId = notebook.runtimeId || dss.activeRuntimeId;
+  renderRuntimeSelector();
 }
 function renderWorkspace() { renderProjectContext(); renderNotebookNavigation(); renderDatasets(); renderCells(); }
 function closeNotebook(id) {
@@ -210,6 +290,7 @@ function closeNotebook(id) {
 }
 function renameActiveNotebook() {
   const title = document.querySelector('#notebook-title'); const notebook = activeNotebook();
+  if (notebook.remote) { setSavedState('Renaming native DSS notebooks is not enabled yet'); return; }
   if (title.querySelector('input')) return;
   title.innerHTML = `<input id="notebook-rename-input" value="${escapeHTML(notebook.name)}" aria-label="Notebook name" />`;
   const input = title.querySelector('input'); input.focus(); input.select();
@@ -219,6 +300,7 @@ function renameActiveNotebook() {
 }
 function renameNotebookInTree(id) {
   const notebook = state.notebooks.notebooks.find(item => item.id === id); const row = document.querySelector(`[data-drag-notebook-id="${id}"]`); if (!notebook || !row) return;
+  if (notebook.remote) { setSavedState('Renaming native DSS notebooks is not enabled yet'); return; }
   const button = row.querySelector('.project-notebook'); button.innerHTML = `<input class="tree-rename" value="${escapeHTML(notebook.name)}" aria-label="Notebook name" />`;
   const input = button.querySelector('input'); input.focus(); input.select();
   const commit = () => { const name = input.value.trim(); if (name) { notebook.name = name; notebook.updatedAt = Date.now(); persistNotebooks(); } renderNotebookNavigation(); };
@@ -273,8 +355,30 @@ cellsEl.addEventListener('dragend', () => { state.dragId = null; document.queryS
 document.querySelector('#run-all').addEventListener('click', () => { state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells(); });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#refresh-datasets').addEventListener('click', loadProjectContext);
+document.querySelector('#executor-selector').addEventListener('change', event => {
+  dss.activeRuntimeId = event.target.value;
+  if (dss.enabled) setSavedState('Runtime selected for the next DSS notebook');
+});
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
-document.querySelector('#new-notebook-button').addEventListener('click', () => { const number = state.notebooks.notebooks.length + 1; const notebook = { id: crypto.randomUUID(), name: `Untitled notebook ${number}`, language: 'PYTHON', cells: [newCell('python')], open: true, updatedAt: Date.now(), folderId: null }; notebook.cells[0].source = ''; state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = notebook.cells[0].id; resetHistory(); persistNotebooks(); renderWorkspace(); focusCell(notebook.cells[0].id); });
+document.querySelector('#new-notebook-button').addEventListener('click', async () => {
+  if (dss.enabled) {
+    const name = `Untitled notebook ${state.notebooks.notebooks.length + 1}`;
+    setSavedState('Creating notebook in DSS…');
+    try {
+      const payload = await dssRequest('notebooks', { method: 'POST', body: JSON.stringify({ name, runtimeId: dss.activeRuntimeId }) });
+      const notebook = {
+        id: name, name, language: 'PYTHON', cells: cellsFromDss(payload.notebook), open: true,
+        updatedAt: Date.now(), folderId: null, remote: true, loaded: true, dssContent: payload.notebook,
+        runtimeId: runtimeIdFor(payload.notebook.metadata?.kernelspec),
+      };
+      state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells;
+      state.selected.clear(); state.activeCellId = notebook.cells[0]?.id || null; resetHistory(); renderWorkspace();
+      setSavedState('Created in DSS'); if (notebook.cells[0]) focusCell(notebook.cells[0].id);
+    } catch (error) { setSavedState(`Create failed: ${error.message}`, true); console.warn(error); }
+    return;
+  }
+  const number = state.notebooks.notebooks.length + 1; const notebook = { id: crypto.randomUUID(), name: `Untitled notebook ${number}`, language: 'PYTHON', cells: [newCell('python')], open: true, updatedAt: Date.now(), folderId: null }; notebook.cells[0].source = ''; state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = notebook.cells[0].id; resetHistory(); persistNotebooks(); renderWorkspace(); focusCell(notebook.cells[0].id);
+});
 document.querySelector('#notebook-tree').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
 document.querySelector('#notebook-tree').addEventListener('dblclick', event => { const row = event.target.closest('[data-drag-notebook-id]'); const folder = event.target.closest('[data-folder-id]'); if (row) renameNotebookInTree(row.dataset.dragNotebookId); else if (folder) renameFolderInTree(folder.dataset.folderId); });
 document.querySelector('#notebook-tree').addEventListener('dragstart', event => { const row = event.target.closest('[data-drag-notebook-id]'); if (!row) return; event.dataTransfer.setData('text/plain', row.dataset.dragNotebookId); event.dataTransfer.effectAllowed = 'move'; row.classList.add('dragging'); });
@@ -325,4 +429,4 @@ document.addEventListener('keydown', event => {
 
 state.activeNotebookId = state.notebooks.activeNotebookId || state.notebooks.notebooks[0].id;
 state.cells = activeNotebook().cells;
-resetHistory(); save(false); renderWorkspace(); loadProjectContext();
+resetHistory(); save(false); renderWorkspace(); loadProjectContext(); loadDssWorkspace();
