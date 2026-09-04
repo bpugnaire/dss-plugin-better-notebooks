@@ -36,7 +36,8 @@ const starterCells = [
   { id: crypto.randomUUID(), type: 'python', source: '# Try a quick check\ncustomers.isna().sum().sort_values(ascending=False).head(10)', meta: '' },
 ];
 
-const state = { notebooks: loadNotebooks(), activeNotebookId: null, notebookListMode: 'all', cells: [], selected: new Set(), clipboard: [], dragId: null, activeCellId: null, history: [], historyIndex: -1 };
+const state = { notebooks: loadNotebooks(), activeNotebookId: null, notebookListMode: 'all', cells: [], selected: new Set(), clipboard: [], dragId: null, activeCellId: null, history: [], historyIndex: -1, collapsedHeadings: new Set(), searchQuery: '', searchIndex: 0 };
+const execution = { runningAll: false, stopRequested: false };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
 
@@ -428,13 +429,14 @@ function dataframeMarkup(html) {
   const document = new DOMParser().parseFromString(outputText(html), 'text/html');
   const sourceTable = document.querySelector('table.dataframe');
   if (!sourceTable) return '';
-  const renderRows = selector => [...sourceTable.querySelectorAll(selector)].map(row => `<tr>${[...row.cells].map(cell => {
+  const renderRows = selector => [...sourceTable.querySelectorAll(selector)].map(row => `<tr>${[...row.cells].map((cell, index) => {
     const tag = cell.tagName.toLowerCase();
-    return `<${tag}>${escapeHTML(cell.textContent || '')}</${tag}>`;
+    const sort = tag === 'th' && row.parentElement.tagName === 'THEAD' && index ? ` data-sort-column="${index}" title="Sort by ${escapeHTML(cell.textContent || '')}"` : '';
+    return `<${tag}${sort}>${escapeHTML(cell.textContent || '')}</${tag}>`;
   }).join('')}</tr>`).join('');
   const columnCount = sourceTable.querySelector('thead tr')?.cells.length ? sourceTable.querySelector('thead tr').cells.length - 1 : 0;
   const rowCount = sourceTable.querySelectorAll('tbody tr').length;
-  return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><button type="button" title="Table exploration will be added next">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
+  return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><label class="dataframe-filter">⌕<input type="search" placeholder="Filter rows" aria-label="Filter DataFrame rows" /></label><button type="button" class="explore-dataframe">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
 }
 function markdownMarkup(source) {
   return escapeHTML(source).split('\n').map(line => {
@@ -450,11 +452,16 @@ function renderCells() {
   const editorApi = BetterNotebookEditor;
   editorApi.destroyAll();
   cellsEl.innerHTML = '';
+  let collapsedAtLevel = 0;
   state.cells.forEach((data, index) => {
+    const heading = data.type === 'markdown' ? data.source.match(/^(#{1,3})\s+/) : null;
+    const headingLevel = heading ? heading[1].length : 0;
+    if (headingLevel && headingLevel <= collapsedAtLevel) collapsedAtLevel = 0;
     const node = template.content.firstElementChild.cloneNode(true);
     node.dataset.id = data.id; node.dataset.type = data.type; node.draggable = true;
     if (state.selected.has(data.id)) node.classList.add('selected');
     if (state.activeCellId === data.id) node.classList.add('active');
+    if (collapsedAtLevel) node.classList.add('section-hidden');
     const language = node.querySelector('.cell-language'); language.classList.add(data.type);
     const editorHost = node.querySelector('.code-editor');
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
@@ -470,6 +477,7 @@ function renderCells() {
     });
     editorApi.setDiagnostic(data.id, data.diagnostic);
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
+    if (headingLevel && state.collapsedHeadings.has(data.id)) collapsedAtLevel = headingLevel;
   });
   renderToolbar(); renderOutline();
   requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
@@ -487,7 +495,7 @@ function renderOutline() {
     })
     : []);
   list.innerHTML = headings.length
-    ? headings.map(heading => `<button class="outline-item level-${heading.level}" data-outline-id="${heading.id}"><span>H${heading.level}</span>${escapeHTML(heading.title)}</button>`).join('')
+    ? headings.map(heading => `<button class="outline-item level-${heading.level}" data-outline-id="${heading.id}"><span class="outline-section-toggle" data-collapse-heading="${heading.id}">${state.collapsedHeadings.has(heading.id) ? '›' : '⌄'}</span>${escapeHTML(heading.title)}</button>`).join('')
     : '<p class="outline-empty">Add Markdown headings to build an outline.</p>';
 }
 function renderNotebookNavigation() {
@@ -595,10 +603,10 @@ function focusCell(id, preventScroll = false) { requestAnimationFrame(() => Bett
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
 async function runCell(id) {
   const cell = getCell(id); if (!cell) return;
-  if (dss.loading || (activeNotebook().remote && !dss.workspaceLoaded)) { setSavedState('Waiting for the native DSS notebook to finish loading…'); return; }
+  if (dss.loading || (activeNotebook().remote && !dss.workspaceLoaded)) { setSavedState('Waiting for the native DSS notebook to finish loading…'); return false; }
   state.activeCellId = id;
-  if (cell.type === 'markdown') { cell.meta = 'Rendered just now'; save(); renderCells(); return; }
-  if (!activeNotebook().remote) { cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : 'table'; save(); renderCells(); return; }
+  if (cell.type === 'markdown') { cell.meta = 'Rendered just now'; save(); renderCells(); return true; }
+  if (!activeNotebook().remote) { cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : 'table'; save(); renderCells(); return true; }
   const started = performance.now(); cell.meta = 'Running…'; renderCells();
   try {
     const source = cell.type === 'sql' ? `%sql\n${cell.source}` : cell.source;
@@ -606,10 +614,10 @@ async function runCell(id) {
     cell.output = { outputs: result.outputs };
     cell.dssCell = { ...(cell.dssCell || {}), outputs: result.outputs, execution_count: result.executionCount };
     cell.meta = `Ran just now · ${((performance.now() - started) / 1000).toFixed(2)}s`;
-    save(); renderCells(); setSavedState('Executed in DSS');
+    save(); renderCells(); setSavedState('Executed in DSS'); return true;
   } catch (error) {
     cell.meta = 'Execution failed'; cell.output = { outputs: [{ output_type: 'error', ename: 'DSS execution error', evalue: error.message, traceback: [] }] };
-    renderCells(); setSavedState(`Execution failed: ${error.message}`, true); console.warn(error);
+    renderCells(); setSavedState(`Execution failed: ${error.message}`, true); console.warn(error); return false;
   }
 }
 async function runAndAdvance(id) {
@@ -649,9 +657,24 @@ cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.cl
 cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCell(state.dragId, cell.dataset.id); });
 cellsEl.addEventListener('dragend', () => { state.dragId = null; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target')); });
 
+function renderExecutionControls() {
+  document.querySelector('#run-all').disabled = execution.runningAll;
+  document.querySelector('#run-all').innerHTML = execution.runningAll ? '<span>◌</span> Running all' : '<span>▶</span> Run all';
+  document.querySelector('#stop-run-all').classList.toggle('hidden', !execution.runningAll);
+}
 document.querySelector('#run-all').addEventListener('click', async () => {
-  for (const cell of state.cells) await runCell(cell.id);
+  if (execution.runningAll) return;
+  execution.runningAll = true; execution.stopRequested = false; renderExecutionControls();
+  let ran = 0;
+  for (const cell of state.cells) {
+    if (execution.stopRequested) break;
+    const succeeded = await runCell(cell.id); ran += 1;
+    if (!succeeded) { setSavedState(`Run all stopped after cell ${ran} because it failed`, true); break; }
+  }
+  if (execution.stopRequested) setSavedState(`Run all stopped after ${ran} cell${ran === 1 ? '' : 's'}`);
+  execution.runningAll = false; renderExecutionControls();
 });
+document.querySelector('#stop-run-all').addEventListener('click', () => { execution.stopRequested = true; setSavedState('Stopping after the current cell…'); });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#refresh-datasets').addEventListener('click', loadProjectContext);
 document.querySelector('#executor-selector').addEventListener('change', event => {
@@ -716,8 +739,46 @@ document.querySelector('#cancel-folder').addEventListener('click', closeFolderMo
 folderModal.addEventListener('click', event => { if (event.target === folderModal) closeFolderModal(); });
 document.querySelector('#folder-form').addEventListener('submit', event => { event.preventDefault(); const name = document.querySelector('#folder-name-input').value.trim(); if (!name) return; state.notebooks.folders.push({ id: crypto.randomUUID(), name }); persistNotebooks(); renderNotebookNavigation(); closeFolderModal(); });
 document.querySelector('#outline-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('outline-collapsed'));
-document.querySelector('#outline-list').addEventListener('click', event => document.querySelector(`[data-id="${event.target.closest('[data-outline-id]')?.dataset.outlineId}"]`)?.scrollIntoView({ behavior:'smooth', block:'center' }));
+document.querySelector('#outline-list').addEventListener('click', event => {
+  const collapsed = event.target.closest('[data-collapse-heading]');
+  if (collapsed) { const id = collapsed.dataset.collapseHeading; state.collapsedHeadings.has(id) ? state.collapsedHeadings.delete(id) : state.collapsedHeadings.add(id); renderCells(); return; }
+  document.querySelector(`[data-id="${event.target.closest('[data-outline-id]')?.dataset.outlineId}"]`)?.scrollIntoView({ behavior:'smooth', block:'center' });
+});
 document.querySelector('#dismiss-notice').addEventListener('click', event => event.target.closest('.notice').remove());
+function filterDataframe(section, query) {
+  const normalized = query.trim().toLowerCase();
+  section.querySelectorAll('tbody tr').forEach(row => { row.hidden = Boolean(normalized) && !row.textContent.toLowerCase().includes(normalized); });
+}
+function sortDataframe(table, column) {
+  const body = table.tBodies[0]; const rows = [...body.rows];
+  const direction = table.dataset.sortColumn === String(column) && table.dataset.sortDirection === 'asc' ? 'desc' : 'asc';
+  rows.sort((left, right) => left.cells[column].textContent.localeCompare(right.cells[column].textContent, undefined, { numeric: true }));
+  if (direction === 'desc') rows.reverse(); rows.forEach(row => body.append(row));
+  table.dataset.sortColumn = String(column); table.dataset.sortDirection = direction;
+}
+cellsEl.addEventListener('input', event => { const filter = event.target.closest('.dataframe-filter input'); if (filter) filterDataframe(filter.closest('.dataframe-output'), filter.value); });
+cellsEl.addEventListener('click', event => {
+  const header = event.target.closest('[data-sort-column]'); if (header) { sortDataframe(header.closest('table'), Number(header.dataset.sortColumn)); return; }
+  const explore = event.target.closest('.explore-dataframe'); if (explore) { const section = explore.closest('.dataframe-output'); document.querySelector('#dataframe-modal-content').innerHTML = section.outerHTML; document.querySelector('#dataframe-modal').classList.remove('hidden'); }
+});
+const dataframeModal = document.querySelector('#dataframe-modal');
+const closeDataframeModal = () => dataframeModal.classList.add('hidden');
+document.querySelector('#close-dataframe-modal').addEventListener('click', closeDataframeModal);
+dataframeModal.addEventListener('click', event => { if (event.target === dataframeModal) closeDataframeModal(); });
+document.querySelector('#cell-search').addEventListener('input', event => {
+  state.searchQuery = event.target.value.trim().toLowerCase(); state.searchIndex = 0;
+  const matches = state.cells.filter(cell => state.searchQuery && cell.source.toLowerCase().includes(state.searchQuery));
+  document.querySelector('#cell-search-count').textContent = state.searchQuery ? `${matches.length} match${matches.length === 1 ? '' : 'es'}` : '';
+  document.querySelectorAll('.cell.search-match').forEach(cell => cell.classList.remove('search-match'));
+  matches.forEach(cell => document.querySelector(`[data-id="${cell.id}"]`)?.classList.add('search-match'));
+  if (matches[0]) document.querySelector(`[data-id="${matches[0].id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
+document.querySelector('#cell-search').addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || !state.searchQuery) return;
+  const matches = state.cells.filter(cell => cell.source.toLowerCase().includes(state.searchQuery)); if (!matches.length) return;
+  event.preventDefault(); state.searchIndex = (state.searchIndex + 1) % matches.length;
+  document.querySelector(`[data-id="${matches[state.searchIndex].id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
 document.querySelector('#batch-toolbar').addEventListener('click', event => { const action = event.target.dataset.batchAction; if (!action) return; if (action === 'run') state.selected.forEach(runCell); if (action === 'duplicate') duplicateSelected(); if (action === 'copy') copySelected(); if (action === 'cut') copySelected(true); if (action === 'delete') deleteSelected(); if (action === 'clear') { state.selected.clear(); renderCells(); } });
 document.querySelector('.workspace').addEventListener('click', event => { if (!state.selected.size || event.target.closest('.cell, button, textarea, input, .batch-toolbar')) return; state.selected.clear(); renderCells(); });
 const settingsModal = document.querySelector('#settings-modal');
@@ -728,7 +789,7 @@ document.querySelector('#done-settings').addEventListener('click', closeSettings
 settingsModal.addEventListener('click', event => { if (event.target === settingsModal) closeSettings(); });
 document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
-  if (event.key === 'Escape') { closeSettings(); closeFolderModal(); return; }
+  if (event.key === 'Escape') { closeSettings(); closeFolderModal(); closeDataframeModal(); return; }
   if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
   // A focused CodeMirror editor owns its own undo stack. Let it handle Cmd/Ctrl+Z
   // so the edit is undone in place and the cursor never leaves the cell.
@@ -758,4 +819,4 @@ state.cells = activeNotebook().cells;
 // Start native discovery before constructing editors. A third-party editor
 // rendering failure must never leave the page looking like browser preview
 // while silently preventing the DSS project handshake.
-resetHistory(); startDssIntegration(); renderWorkspace();
+resetHistory(); startDssIntegration(); renderWorkspace(); renderExecutionControls();
