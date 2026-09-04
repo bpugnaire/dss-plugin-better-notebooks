@@ -1,6 +1,7 @@
 """DSS project context and native notebook storage adapters."""
 
 import ast
+import json
 import re
 
 import dataiku
@@ -77,6 +78,8 @@ def get_project_context():
         if not name:
             continue
         columns = []
+        connection = ""
+        table_name = ""
         try:
             columns = dataiku.Dataset(name, project_key=summary["projectKey"]).read_schema(
                 raise_if_empty=False
@@ -86,6 +89,8 @@ def get_project_context():
         datasets.append({
             "name": name,
             "type": dataset.get("type", ""),
+            "connection": connection,
+            "tableName": table_name,
             "columns": [
                 {"name": column.get("name", ""), "type": column.get("type", "")}
                 for column in columns if column.get("name")
@@ -96,7 +101,15 @@ def get_project_context():
         # connections directly from project dataset settings as well.
         try:
             raw_settings = project.get_dataset(name).get_settings().get_raw()
-            add_connection(raw_settings.get("params", {}).get("connection"), dataset.get("type"))
+            connection = raw_settings.get("params", {}).get("connection", "")
+            datasets[-1]["connection"] = connection
+            add_connection(connection, dataset.get("type"))
+        except Exception:
+            pass
+        try:
+            location = dataiku.Dataset(name, project_key=summary["projectKey"]).get_location_info().get("info", {})
+            table_name = location.get("quotedResolvedTableName") or location.get("table") or ""
+            datasets[-1]["tableName"] = table_name
         except Exception:
             pass
     try:
@@ -119,6 +132,19 @@ def get_project_context():
         "datasets": sorted(datasets, key=lambda item: item["name"].lower()),
         "connections": sorted(connections, key=lambda item: item["name"].lower()),
     })
+
+
+@app.route("/datasets/<path:dataset_name>/preview", methods=["GET"])
+def preview_dataset(dataset_name):
+    """Return a small, JSON-safe preview for the interactive dataset inspector."""
+    project = current_project()
+    summary = project.get_summary()
+    try:
+        frame = dataiku.Dataset(dataset_name, project_key=summary["projectKey"]).get_dataframe(limit=20)
+        preview = json.loads(frame.to_json(orient="split", date_format="iso", default_handler=str))
+        return jsonify({"columns": preview.get("columns", []), "rows": preview.get("data", []), "rowCount": len(frame.index)})
+    except Exception as error:
+        return jsonify({"error": "Could not preview this dataset: %s" % error}), 400
 
 
 @app.route("/notebooks", methods=["GET"])

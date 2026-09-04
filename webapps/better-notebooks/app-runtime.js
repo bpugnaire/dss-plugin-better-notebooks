@@ -15,6 +15,7 @@ let DATASETS = [
 const projectContext = { name: 'Current project', key: '', isDss: false, connections: [], sqlConnection: '', managedConnection: 'filesystem_managed' };
 const dss = { enabled: false, loading: false, workspaceLoaded: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
 let dssSaveTimer;
+let selectedDatasetName = '';
 const diagnosticsTimers = new Map();
 
 const TABLE = {
@@ -410,6 +411,7 @@ async function loadProjectContext() {
       kind: ['blue', 'orange', 'purple'][index % 3],
       type: dataset.type || 'Dataset',
       columns: Array.isArray(dataset.columns) ? dataset.columns : [],
+      connection: dataset.connection || '', tableName: dataset.tableName || '',
     }));
     projectContext.connections = Array.isArray(payload.connections) ? payload.connections : [];
     const sqlConnections = projectContext.connections.filter(connection => connection.type !== 'Filesystem');
@@ -462,9 +464,36 @@ function renderDatasets(filter = '') {
   document.querySelector('#dataset-list').innerHTML = matches.length
     ? matches.map(dataset => {
       const columns = dataset.columns?.length ? ` · ${dataset.columns.length} columns` : '';
-      return `<button class="dataset" data-dataset="${escapeHTML(dataset.name)}" title="${escapeHTML(`${dataset.type || 'Dataset'}${columns}`)}"><i class="${dataset.kind}"></i><span>${escapeHTML(dataset.name)}</span></button>`;
+      return `<button class="dataset ${dataset.name === selectedDatasetName ? 'active' : ''}" data-dataset="${escapeHTML(dataset.name)}" title="${escapeHTML(`${dataset.type || 'Dataset'}${columns}`)}"><i class="${dataset.kind}"></i><span>${escapeHTML(dataset.name)}</span></button>`;
     }).join('')
     : '<p class="dataset-empty">No project datasets found.</p>';
+}
+function datasetVariableName(name) { return name.replace(/\W/g, '_'); }
+function insertDatasetCell(dataset, mode = 'python') {
+  const cell = newCell(mode === 'sql' ? 'sql' : 'python');
+  const variable = datasetVariableName(dataset.name);
+  cell.source = mode === 'sql'
+    ? `SELECT *\nFROM ${dataset.tableName}\nLIMIT 100`
+    : `import dataiku\n\n${variable} = dataiku.Dataset("${dataset.name}").get_dataframe()\n${variable}.head()`;
+  state.cells.push(cell); save(); renderCells(); focusCell(cell.id);
+}
+function previewTableMarkup(preview) {
+  if (!preview?.columns?.length) return '<span class="dataset-preview-empty">No preview rows available.</span>';
+  return `<div class="dataset-preview-table"><table><thead><tr>${preview.columns.map(column => `<th>${escapeHTML(String(column))}</th>`).join('')}</tr></thead><tbody>${preview.rows.map(row => `<tr>${row.map(value => `<td>${escapeHTML(value == null ? '' : String(value))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+async function selectDataset(name) {
+  const dataset = DATASETS.find(item => item.name === name); if (!dataset) return;
+  selectedDatasetName = name; renderDatasets(document.querySelector('#dataset-search').value);
+  const inspector = document.querySelector('#dataset-inspector'); inspector.classList.remove('hidden');
+  inspector.innerHTML = `<span class="eyebrow">DATASET</span><strong>${escapeHTML(dataset.name)}</strong><span class="dataset-inspector-meta">${escapeHTML(dataset.type || 'Dataset')}${dataset.connection ? ` · ${escapeHTML(dataset.connection)}` : ''}</span><div class="dataset-inspector-actions"><button data-insert-dataset="${escapeHTML(dataset.name)}">+ Load Python</button>${dataset.tableName ? `<button data-insert-dataset-sql="${escapeHTML(dataset.name)}">+ Insert SQL</button>` : ''}</div><div class="dataset-schema">${dataset.columns.slice(0, 8).map(column => `<span>${escapeHTML(column.name)}<i>${escapeHTML(column.type || '')}</i></span>`).join('') || '<span>No schema available.</span>'}</div><div class="dataset-preview-loading">Loading sample…</div>`;
+  if (!projectContext.isDss) { inspector.querySelector('.dataset-preview-loading').textContent = 'Open this webapp inside DSS to preview rows.'; return; }
+  try {
+    const preview = await dssRequest(`datasets/${encodeURIComponent(dataset.name)}/preview`);
+    if (selectedDatasetName !== name) return;
+    inspector.querySelector('.dataset-preview-loading').outerHTML = previewTableMarkup(preview);
+  } catch (error) {
+    if (selectedDatasetName === name) inspector.querySelector('.dataset-preview-loading').textContent = 'Preview unavailable for this dataset.';
+  }
 }
 function renderLinkedDatasets() {
   const container = document.querySelector('#linked-datasets');
@@ -541,7 +570,7 @@ function dataframeMarkup(html, cellId = '') {
   }).join('')}</tr>`).join('');
   const columnCount = sourceTable.querySelector('thead tr')?.cells.length ? sourceTable.querySelector('thead tr').cells.length - 1 : 0;
   const rowCount = sourceTable.querySelectorAll('tbody tr').length;
-  return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><label class="dataframe-filter">⌕<input type="search" placeholder="Filter rows" aria-label="Filter DataFrame rows" /></label><button type="button" class="create-dataset" data-create-dataset-from-cell="${escapeHTML(cellId)}">Create dataset</button><button type="button" class="explore-dataframe">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
+  return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><label class="dataframe-filter">⌕<input type="search" placeholder="Filter rows" aria-label="Filter DataFrame rows" /></label><button type="button" class="create-dataset" data-create-dataset-from-cell="${escapeHTML(cellId)}">Create dataset</button><button type="button" class="chart-dataframe">Chart</button><button type="button" class="explore-dataframe">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
 }
 function markdownMarkup(source) {
   return escapeHTML(source).split('\n').map(line => {
@@ -822,7 +851,11 @@ document.querySelector('#sql-executor-selector').addEventListener('change', even
   if (projectContext.sqlConnection) projectContext.managedConnection = projectContext.sqlConnection;
   setSavedState(projectContext.sqlConnection ? `SQL connection: ${projectContext.sqlConnection}` : 'No SQL connection selected');
 });
-document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
+document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (dataset) selectDataset(dataset.dataset.dataset); });
+document.querySelector('#dataset-inspector').addEventListener('click', event => {
+  const python = event.target.closest('[data-insert-dataset]'); if (python) { const dataset = DATASETS.find(item => item.name === python.dataset.insertDataset); if (dataset) insertDatasetCell(dataset); return; }
+  const sql = event.target.closest('[data-insert-dataset-sql]'); if (sql) { const dataset = DATASETS.find(item => item.name === sql.dataset.insertDatasetSql); if (dataset) insertDatasetCell(dataset, 'sql'); }
+});
 document.querySelector('#new-notebook-button').addEventListener('click', async () => {
   if (dss.enabled) {
     const name = `Untitled notebook ${state.notebooks.notebooks.length + 1}`;
@@ -892,6 +925,18 @@ function sortDataframe(table, column) {
   if (direction === 'desc') rows.reverse(); rows.forEach(row => body.append(row));
   table.dataset.sortColumn = String(column); table.dataset.sortDirection = direction;
 }
+function chartDataframe(section) {
+  const existing = section.querySelector('.dataframe-chart'); if (existing) { existing.remove(); return; }
+  const table = section.querySelector('table'); const headers = [...table.tHead.rows[0].cells].slice(1).map(cell => cell.textContent);
+  const rows = [...table.tBodies[0].rows].slice(0, 12).filter(row => !row.hidden);
+  const numericColumn = headers.findIndex((_, index) => rows.some(row => Number.parseFloat(row.cells[index + 1]?.textContent.replace(/[^0-9.-]/g, '')) === Number.parseFloat(row.cells[index + 1]?.textContent.replace(/[^0-9.-]/g, ''))));
+  if (numericColumn < 0 || !rows.length) { setSavedState('No numeric column is available for a quick chart', true); return; }
+  const values = rows.map(row => Number.parseFloat(row.cells[numericColumn + 1].textContent.replace(/[^0-9.-]/g, '')) || 0); const max = Math.max(...values, 1);
+  const categoryColumn = headers.findIndex((_, index) => index !== numericColumn && rows.some(row => row.cells[index + 1]?.textContent));
+  const chart = document.createElement('div'); chart.className = 'dataframe-chart';
+  chart.innerHTML = `<strong>${escapeHTML(headers[numericColumn])}</strong>${rows.map((row, index) => `<div><span title="${escapeHTML(categoryColumn >= 0 ? row.cells[categoryColumn + 1].textContent : String(index + 1))}">${escapeHTML(categoryColumn >= 0 ? row.cells[categoryColumn + 1].textContent : String(index + 1))}</span><i><b style="width:${Math.max(2, values[index] / max * 100)}%"></b></i><em>${escapeHTML(String(values[index]))}</em></div>`).join('')}`;
+  section.append(chart);
+}
 async function createDatasetFromDataframe(cellId) {
   if (!dss.enabled || !projectContext.isDss) { setSavedState('Create datasets is available inside DSS', true); return; }
   const cell = getCell(cellId);
@@ -913,6 +958,7 @@ cellsEl.addEventListener('input', event => { const filter = event.target.closest
 cellsEl.addEventListener('click', event => {
   const header = event.target.closest('[data-sort-column]'); if (header) { sortDataframe(header.closest('table'), Number(header.dataset.sortColumn)); return; }
   const createDataset = event.target.closest('[data-create-dataset-from-cell]'); if (createDataset) { createDatasetFromDataframe(createDataset.dataset.createDatasetFromCell); return; }
+  const chart = event.target.closest('.chart-dataframe'); if (chart) { chartDataframe(chart.closest('.dataframe-output')); return; }
   const explore = event.target.closest('.explore-dataframe'); if (explore) { const section = explore.closest('.dataframe-output'); document.querySelector('#dataframe-modal-content').innerHTML = section.outerHTML; document.querySelector('#dataframe-modal').classList.remove('hidden'); }
 });
 const dataframeModal = document.querySelector('#dataframe-modal');
