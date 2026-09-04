@@ -1,1 +1,5 @@
-# DSS supplies dataiku and Flask to the Standard webapp backend.
+# The Standard webapp backend runner itself imports MarkupSafe. Keep these
+# dependencies explicit because a newly-created plugin environment is isolated
+# from the DSS built-in environment.
+Flask>=2.3,<3
+MarkupSafe>=2.1,<3
