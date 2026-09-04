@@ -550,8 +550,23 @@ function markdownMarkup(source) {
   }).join('');
 }
 function autoHeight(textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`; }
+function captureScrollPositions() {
+  const positions = [{ node: window, top: window.scrollY, left: window.scrollX }];
+  let node = cellsEl.parentElement;
+  while (node) {
+    if (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth) positions.push({ node, top: node.scrollTop, left: node.scrollLeft });
+    node = node.parentElement;
+  }
+  return positions;
+}
+function restoreScrollPositions(positions) {
+  positions.forEach(({ node, top, left }) => {
+    if (node === window) window.scrollTo({ top, left, behavior: 'instant' });
+    else { node.scrollTop = top; node.scrollLeft = left; }
+  });
+}
 function renderCells() {
-  const scrollY = window.scrollY;
+  const scrollPositions = captureScrollPositions();
   const editorApi = BetterNotebookEditor;
   editorApi.destroyAll();
   cellsEl.innerHTML = '';
@@ -586,7 +601,7 @@ function renderCells() {
     if (headingLevel && state.collapsedHeadings.has(data.id)) collapsedAtLevel = headingLevel;
   });
   renderToolbar(); renderOutline();
-  requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
+  requestAnimationFrame(() => restoreScrollPositions(scrollPositions));
 }
 function renderToolbar() {
   const toolbar = document.querySelector('#batch-toolbar'); const count = state.selected.size;
@@ -721,8 +736,9 @@ async function runCell(id) {
     });
     cell.output = { outputs: result.outputs };
     cell.dssCell = { ...(cell.dssCell || {}), outputs: result.outputs, execution_count: result.executionCount };
-    cell.meta = `Ran just now · ${((performance.now() - started) / 1000).toFixed(2)}s`;
-    cell.running = false; save(); renderCells(); setSavedState('Executed in DSS'); return true;
+    const failed = result.outputs.some(output => output.output_type === 'error');
+    cell.meta = failed ? 'Execution failed' : `Ran just now · ${((performance.now() - started) / 1000).toFixed(2)}s`;
+    cell.running = false; save(); renderCells(); setSavedState(failed ? 'Execution failed' : 'Executed in DSS', failed); return !failed;
   } catch (error) {
     cell.running = false; cell.meta = 'Execution failed'; cell.output = { outputs: [{ output_type: 'error', ename: 'DSS execution error', evalue: error.message, traceback: [] }] };
     renderCells(); setSavedState(`Execution failed: ${error.message}`, true); console.warn(error); return false;
@@ -730,7 +746,8 @@ async function runCell(id) {
 }
 async function runAndAdvance(id) {
   const nextId = state.cells[cellIndex(id) + 1]?.id;
-  await runCell(id);
+  const succeeded = await runCell(id);
+  if (!succeeded) return;
   if (nextId) { setActiveCell(nextId); focusCell(nextId); return; }
   const newCodeCell = newCell('python'); newCodeCell.source = ''; state.cells.push(newCodeCell); state.activeCellId = newCodeCell.id; save(); renderCells(); focusCell(newCodeCell.id, true);
 }

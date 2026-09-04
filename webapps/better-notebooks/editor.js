@@ -49,6 +49,22 @@ function completeWithTab(view) {
   return /[\w.]/.test(token) ? startCompletion(view) : false;
 }
 
+function formatInspection(value, name) {
+  const clean = String(value || '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\[(?:\d{1,3}(?:;\d{1,3})*)m/g, '')
+    .replace(/\r/g, '')
+    .trim();
+  if (!clean) return '';
+  const lines = clean.split('\n');
+  const signatureLine = lines.find(line => /^(?:Init )?signature\s*:/i.test(line.trim()));
+  const docIndex = lines.findIndex(line => /^docstring\s*:/i.test(line.trim()));
+  const signature = signatureLine ? signatureLine.replace(/^(?:Init )?signature\s*:\s*/i, '').replace(/\s+/g, ' ').trim() : '';
+  const docLines = docIndex >= 0 ? lines.slice(docIndex + 1) : lines.filter(line => line !== signatureLine);
+  const summary = docLines.join(' ').replace(/\s+/g, ' ').trim().slice(0, 700);
+  return [signature || name, summary].filter(Boolean).join('\n\n');
+}
+
 function completionSource(type, datasets, symbols = [], connections = []) {
   return context => {
     const word = context.matchBefore(/[\w.]*/);
@@ -88,7 +104,7 @@ function hoverFor(datasets, symbols = [], connections = [], onInspect = null) {
         const dom = document.createElement('div'); dom.className = 'cm-project-hover';
         if (inspected) {
           const title = document.createElement('strong'); title.textContent = name; dom.append(title);
-          const detail = document.createElement('span'); detail.textContent = inspected.slice(0, 1800); dom.append(detail);
+          const detail = document.createElement('span'); detail.textContent = formatInspection(inspected, name); dom.append(detail);
         } else if (dataset) {
           const title = document.createElement('strong'); title.textContent = dataset.name; dom.append(title);
           const detail = document.createElement('span'); detail.textContent = `${dataset.type || 'Dataset'} · ${(dataset.columns || []).length} columns`; dom.append(detail);
