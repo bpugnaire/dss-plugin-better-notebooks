@@ -13,7 +13,7 @@ let DATASETS = [
   { name: 'support_tickets', kind: 'orange' },
 ];
 const projectContext = { name: 'Current project', key: '', isDss: false };
-const dss = { enabled: false, loading: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
+const dss = { enabled: false, loading: false, workspaceLoaded: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
 let dssSaveTimer;
 const diagnosticsTimers = new Map();
 
@@ -48,7 +48,16 @@ function cloneCells(cells) { return cells.map(cell => ({ ...cell, id: crypto.ran
 function loadNotebooks() {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey('notebooks')));
-    if (saved?.notebooks?.length) return { ...saved, folders: saved.folders ?? [], notebooks: saved.notebooks.map(notebook => ({ ...notebook, open: notebook.open ?? true, updatedAt: notebook.updatedAt ?? 0, folderId: notebook.folderId ?? null })) };
+    // Native DSS notebooks must always be rehydrated from DSS. Keeping them in
+    // browser storage can render an obsolete one-cell copy and, worse, save it
+    // back before the project discovery calls have completed.
+    const localNotebooks = saved?.notebooks?.filter(notebook => !notebook.remote) || [];
+    if (localNotebooks.length) return {
+      ...saved,
+      activeNotebookId: localNotebooks.some(notebook => notebook.id === saved.activeNotebookId) ? saved.activeNotebookId : localNotebooks[0].id,
+      folders: saved.folders ?? [],
+      notebooks: localNotebooks.map(notebook => ({ ...notebook, open: notebook.open ?? true, updatedAt: notebook.updatedAt ?? 0, folderId: notebook.folderId ?? null })),
+    };
   } catch { /* Start from the browser-only prototype notebook. */ }
   return {
     activeNotebookId: 'customer-behaviour',
@@ -73,7 +82,9 @@ async function switchNotebook(id) {
 }
 function persistNotebooks() { localStorage.setItem(storageKey('notebooks'), JSON.stringify(state.notebooks)); }
 function save(recordHistory = true) {
-  activeNotebook().cells = state.cells; activeNotebook().updatedAt = Date.now(); state.notebooks.activeNotebookId = state.activeNotebookId; persistNotebooks();
+  const notebook = activeNotebook();
+  notebook.cells = state.cells; notebook.updatedAt = Date.now(); state.notebooks.activeNotebookId = state.activeNotebookId;
+  if (!notebook.remote) persistNotebooks();
   if (recordHistory) {
     const snapshot = JSON.stringify(state.cells);
     if (state.history[state.historyIndex] !== snapshot) {
@@ -82,7 +93,9 @@ function save(recordHistory = true) {
       state.historyIndex = state.history.length - 1;
     }
   }
-  if (activeNotebook().remote) queueDssSave(activeNotebook());
+  if (notebook.remote && !dss.workspaceLoaded) {
+    setSavedState('Waiting for the DSS notebook to load before saving…');
+  } else if (notebook.remote) queueDssSave(notebook);
   else setSavedState('Saved locally');
 }
 function undo() {
@@ -93,9 +106,14 @@ function undo() {
   save(false); renderCells();
 }
 function escapeHTML(value) { return value.replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[ch]); }
-function isDssWebappRuntime() { return typeof getWebAppBackendUrl === 'function'; }
+function dssBackendUrl(path) {
+  const bridge = window.getWebAppBackendUrl;
+  if (typeof bridge !== 'function') throw new Error('DSS webapp bridge is unavailable.');
+  return bridge(`/${String(path).replace(/^\/+/, '')}`);
+}
+function isDssWebappRuntime() { return typeof window.getWebAppBackendUrl === 'function'; }
 async function dssRequest(path, options = {}) {
-  const response = await fetch(getWebAppBackendUrl(path), {
+  const response = await fetch(dssBackendUrl(path), {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   });
@@ -311,7 +329,7 @@ async function loadDssWorkspace() {
       updatedAt: 0, folderId: null, remote: true, loaded: false, runtimeId: runtimeIdFor(item.kernelSpec),
     }));
     if (!notebooks.length) {
-      dss.loading = false;
+      dss.loading = false; dss.workspaceLoaded = true;
       setSavedState('No DSS notebooks yet');
       renderRuntimeSelector();
       return;
@@ -321,10 +339,10 @@ async function loadDssWorkspace() {
     await loadDssNotebook(notebooks[0]);
     state.cells = notebooks[0].cells;
     dss.activeRuntimeId = notebooks[0].runtimeId;
-    dss.loading = false; resetHistory(); renderRuntimeSelector(); renderWorkspace();
+    dss.loading = false; dss.workspaceLoaded = true; resetHistory(); renderRuntimeSelector(); renderWorkspace();
     setSavedState('Loaded from DSS');
   } catch (error) {
-    dss.loading = false;
+    dss.loading = false; dss.enabled = false; dss.workspaceLoaded = false;
     console.warn('Better Notebooks could not load native DSS notebooks.', error);
     setSavedState('DSS notebook load failed', true);
   }
@@ -345,9 +363,7 @@ function renderProjectContext() {
 async function loadProjectContext() {
   if (!isDssWebappRuntime()) return;
   try {
-    const response = await fetch(getWebAppBackendUrl('project-context'));
-    if (!response.ok) throw new Error(`Project context endpoint returned ${response.status}`);
-    const payload = await response.json();
+    const payload = await dssRequest('project-context');
     if (!payload.project?.name || !Array.isArray(payload.datasets)) throw new Error('Project context response is invalid');
     projectContext.name = payload.project.name;
     projectContext.key = payload.project.key || '';
@@ -551,7 +567,7 @@ function focusCell(id, preventScroll = false) { requestAnimationFrame(() => Bett
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
 async function runCell(id) {
   const cell = getCell(id); if (!cell) return;
-  if (dss.loading) { setSavedState('Waiting for the native DSS notebook to finish loading…'); return; }
+  if (dss.loading || (activeNotebook().remote && !dss.workspaceLoaded)) { setSavedState('Waiting for the native DSS notebook to finish loading…'); return; }
   state.activeCellId = id;
   if (cell.type === 'markdown') { cell.meta = 'Rendered just now'; save(); renderCells(); return; }
   if (!activeNotebook().remote) { cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : 'table'; save(); renderCells(); return; }
@@ -688,11 +704,17 @@ document.addEventListener('keydown', async event => {
 });
 
 async function startDssIntegration() {
+  dss.loading = true;
+  setSavedState('Connecting to DSS project…');
   const deadline = Date.now() + 5000;
   while (!isDssWebappRuntime() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
-  if (!isDssWebappRuntime()) return;
+  if (!isDssWebappRuntime()) {
+    dss.loading = false;
+    setSavedState('DSS bridge unavailable — native project data was not loaded', true);
+    return;
+  }
   await Promise.all([loadProjectContext(), loadDssWorkspace()]);
 }
 state.activeNotebookId = state.notebooks.activeNotebookId || state.notebooks.notebooks[0].id;
 state.cells = activeNotebook().cells;
-resetHistory(); save(false); renderWorkspace(); startDssIntegration();
+resetHistory(); renderWorkspace(); startDssIntegration();
