@@ -37,7 +37,7 @@
 
       <main class="workspace">
         <header class="topbar">
-          <div class="crumbs"><span>Projects</span><span>/</span><span>Customer Analytics</span><span>/</span><strong id="crumb-notebook-name">Explore customer behaviour</strong></div>
+          <div class="crumbs"><span>Projects</span><span>/</span><span id="crumb-project-name">Current project</span><span>/</span><strong id="crumb-notebook-name">Explore customer behaviour</strong></div>
           <div class="topbar-actions">
             <span class="saved-state" id="saved-state">Saved locally</span>
             <button class="button ghost" id="settings-button">⚙ Settings</button>
@@ -50,7 +50,7 @@
           <div>
             <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill">● Idle</span><button class="executor-selector" id="executor-selector">Python 3.11 <span>⌄</span></button><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
             <h1 class="notebook-title-row"><span id="notebook-title" tabindex="0" title="Double-click to rename">Explore customer behaviour</span><button class="rename-notebook" id="rename-notebook-button" title="Rename notebook" aria-label="Rename notebook">✎</button></h1>
-            <p>Prototype notebook · Local state only</p>
+            <p id="notebook-subtitle">Browser-local notebook workspace</p>
           </div>
           <div class="head-actions">
             <button class="button primary" id="run-all"><span>▶</span> Run all</button>
@@ -74,7 +74,7 @@
       </main>
 
       <aside class="data-panel" aria-label="Project datasets">
-        <div class="data-panel-title"><span>PROJECT DATASETS</span><button class="icon-button small" aria-label="Refresh datasets">↻</button></div>
+        <div class="data-panel-title"><span id="datasets-panel-title">PROJECT DATASETS</span><button class="icon-button small" id="refresh-datasets" aria-label="Refresh project datasets" title="Refresh project datasets">↻</button></div>
         <label class="dataset-search"><span>⌕</span><input id="dataset-search" type="search" placeholder="Search datasets" /></label>
         <div id="dataset-list" class="dataset-list"></div>
         <div class="dataset-hint"><strong>Tip</strong><span>Click a dataset to add its Dataiku loading snippet to the notebook.</span></div>

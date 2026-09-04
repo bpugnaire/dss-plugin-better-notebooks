@@ -10,6 +10,7 @@ let DATASETS = [
   { name: 'product_catalog', kind: 'blue' },
   { name: 'support_tickets', kind: 'orange' },
 ];
+const projectContext = { name: 'Current project', key: '', isDss: false };
 
 const TABLE = {
   columns: [['customer_id', 'string'], ['country', 'string'], ['orders', 'int'], ['lifetime_value', 'decimal'], ['last_order', 'date']],
@@ -84,20 +85,35 @@ function undo() {
 }
 function escapeHTML(value) { return value.replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[ch]); }
 function isDssWebappRuntime() { return typeof getWebAppBackendUrl === 'function'; }
-async function loadProjectDatasets() {
+function renderProjectContext() {
+  document.querySelector('#crumb-project-name').textContent = projectContext.name;
+  document.querySelector('#datasets-panel-title').textContent = projectContext.key
+    ? `${projectContext.name.toUpperCase()} DATASETS`
+    : 'PROJECT DATASETS';
+  document.querySelector('#notebook-subtitle').textContent = projectContext.isDss
+    ? `${projectContext.name} · Browser-local notebook state`
+    : 'Browser-local notebook workspace';
+}
+async function loadProjectContext() {
   if (!isDssWebappRuntime()) return;
   try {
-    const response = await fetch(getWebAppBackendUrl('project-context/datasets'));
-    if (!response.ok) throw new Error(`Dataset endpoint returned ${response.status}`);
+    const response = await fetch(getWebAppBackendUrl('project-context'));
+    if (!response.ok) throw new Error(`Project context endpoint returned ${response.status}`);
     const payload = await response.json();
-    if (!Array.isArray(payload.datasets)) throw new Error('Dataset response is invalid');
+    if (!payload.project?.name || !Array.isArray(payload.datasets)) throw new Error('Project context response is invalid');
+    projectContext.name = payload.project.name;
+    projectContext.key = payload.project.key || '';
+    projectContext.isDss = true;
     DATASETS = payload.datasets.map((dataset, index) => ({
       name: dataset.name,
       kind: ['blue', 'orange', 'purple'][index % 3],
+      type: dataset.type || 'Dataset',
+      columns: Array.isArray(dataset.columns) ? dataset.columns : [],
     }));
+    renderProjectContext();
     renderDatasets(document.querySelector('#dataset-search').value);
   } catch (error) {
-    console.warn('Better Notebooks could not load project datasets; using local examples.', error);
+    console.warn('Better Notebooks could not load project context; using local examples.', error);
   }
 }
 function cellIndex(id) { return state.cells.findIndex(cell => cell.id === id); }
@@ -106,7 +122,13 @@ function newCell(type = 'python') { return { id: crypto.randomUUID(), type, sour
 
 function renderDatasets(filter = '') {
   const query = filter.toLowerCase();
-  document.querySelector('#dataset-list').innerHTML = DATASETS.filter(dataset => dataset.name.includes(query)).map(dataset => `<button class="dataset" data-dataset="${dataset.name}"><i class="${dataset.kind}"></i><span>${dataset.name}</span></button>`).join('');
+  const matches = DATASETS.filter(dataset => dataset.name.toLowerCase().includes(query));
+  document.querySelector('#dataset-list').innerHTML = matches.length
+    ? matches.map(dataset => {
+      const columns = dataset.columns?.length ? ` · ${dataset.columns.length} columns` : '';
+      return `<button class="dataset" data-dataset="${escapeHTML(dataset.name)}" title="${escapeHTML(`${dataset.type || 'Dataset'}${columns}`)}"><i class="${dataset.kind}"></i><span>${escapeHTML(dataset.name)}</span></button>`;
+    }).join('')
+    : '<p class="dataset-empty">No project datasets found.</p>';
 }
 function outputMarkup(kind) {
   if (kind === 'query') return `<div class="query-output success">Query completed · 5 rows returned</div>`;
@@ -174,7 +196,7 @@ function renderNotebookNavigation() {
   document.querySelector('#crumb-notebook-name').textContent = notebook.name;
   document.querySelector('.notebook-head .eyebrow').firstChild.textContent = `${notebook.language} NOTEBOOK `;
 }
-function renderWorkspace() { renderNotebookNavigation(); renderDatasets(); renderCells(); }
+function renderWorkspace() { renderProjectContext(); renderNotebookNavigation(); renderDatasets(); renderCells(); }
 function closeNotebook(id) {
   const openNotebooks = state.notebooks.notebooks.filter(item => item.open);
   if (openNotebooks.length === 1) return;
@@ -250,6 +272,7 @@ cellsEl.addEventListener('dragend', () => { state.dragId = null; document.queryS
 
 document.querySelector('#run-all').addEventListener('click', () => { state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells(); });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
+document.querySelector('#refresh-datasets').addEventListener('click', loadProjectContext);
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
 document.querySelector('#new-notebook-button').addEventListener('click', () => { const number = state.notebooks.notebooks.length + 1; const notebook = { id: crypto.randomUUID(), name: `Untitled notebook ${number}`, language: 'PYTHON', cells: [newCell('python')], open: true, updatedAt: Date.now(), folderId: null }; notebook.cells[0].source = ''; state.notebooks.notebooks.push(notebook); state.activeNotebookId = notebook.id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = notebook.cells[0].id; resetHistory(); persistNotebooks(); renderWorkspace(); focusCell(notebook.cells[0].id); });
 document.querySelector('#notebook-tree').addEventListener('click', event => { const item = event.target.closest('[data-notebook-id]'); if (item) switchNotebook(item.dataset.notebookId); });
@@ -302,4 +325,4 @@ document.addEventListener('keydown', event => {
 
 state.activeNotebookId = state.notebooks.activeNotebookId || state.notebooks.notebooks[0].id;
 state.cells = activeNotebook().cells;
-resetHistory(); save(false); renderWorkspace(); loadProjectDatasets();
+resetHistory(); save(false); renderWorkspace(); loadProjectContext();

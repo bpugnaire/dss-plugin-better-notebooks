@@ -10,8 +10,9 @@ prototype notebooks, open tabs, and display-only folders.
 The current component does **not** replace Dataiku's native notebook editor. It
 is an instantiable project webapp, which is the safe first integration point for
 validating the interaction model and project context. Its first backend endpoint
-is read-only and lists the datasets visible in the current DSS project; local
-browser preview continues to use seeded example datasets.
+is read-only and returns the current project name/key plus the names, types, and
+schemas of visible datasets; local browser preview continues to use seeded
+example datasets. Dataset rows are never returned by this endpoint.
 
 ## Runtime boundary
 
