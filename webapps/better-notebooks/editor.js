@@ -34,7 +34,7 @@ const PYTHON_HOVERS = {
   dataiku: 'Dataiku Python API module',
 };
 
-function completionSource(type, datasets) {
+function completionSource(type, datasets, symbols = [], connections = []) {
   return context => {
     const word = context.matchBefore(/[\w.]*/);
     if (!context.explicit && (!word || word.from === word.to)) return null;
@@ -42,12 +42,17 @@ function completionSource(type, datasets) {
       { label: dataset.name, type: 'variable', detail: 'Project dataset' },
       ...(dataset.columns || []).map(column => ({ label: column.name, type: 'property', detail: `${dataset.name} · ${column.type || 'column'}` })),
     ]);
-    const options = type === 'sql' ? [...SQL_WORDS, ...datasetOptions] : [...PYTHON_WORDS, ...datasetOptions];
+    const liveSymbols = typeof symbols === 'function' ? symbols() : symbols;
+    const symbolOptions = liveSymbols.map(symbol => ({ label: symbol.name, type: symbol.kind === 'function' ? 'function' : 'variable', detail: symbol.detail || 'Defined above' }));
+    const connectionOptions = connections.map(connection => ({ label: connection.name, type: 'namespace', detail: `${connection.type || 'SQL'} connection` }));
+    const options = type === 'sql'
+      ? [...SQL_WORDS, ...datasetOptions, ...connectionOptions]
+      : [...PYTHON_WORDS, ...symbolOptions, ...datasetOptions];
     return { from: word ? word.from : context.pos, options, validFor: /[\w.]*/ };
   };
 }
 
-function hoverFor(datasets) {
+function hoverFor(datasets, symbols = [], connections = []) {
   return hoverTooltip((view, pos) => {
     const word = view.state.wordAt(pos);
     if (!word) return null;
@@ -55,7 +60,10 @@ function hoverFor(datasets) {
     const dataset = datasets.find(item => item.name === name);
     const column = datasets.flatMap(item => (item.columns || []).map(value => ({ dataset: item, column: value }))).find(item => item.column.name === name);
     const pythonDoc = PYTHON_HOVERS[name];
-    if (!dataset && !column && !pythonDoc) return null;
+    const liveSymbols = typeof symbols === 'function' ? symbols() : symbols;
+    const symbol = liveSymbols.find(item => item.name === name);
+    const connection = connections.find(item => item.name === name);
+    if (!dataset && !column && !pythonDoc && !symbol && !connection) return null;
     return {
       pos: word.from, end: word.to, above: true,
       create() {
@@ -66,6 +74,12 @@ function hoverFor(datasets) {
         } else if (column) {
           const title = document.createElement('strong'); title.textContent = column.column.name; dom.append(title);
           const detail = document.createElement('span'); detail.textContent = `${column.dataset.name} · ${column.column.type || 'column'}`; dom.append(detail);
+        } else if (symbol) {
+          const title = document.createElement('strong'); title.textContent = symbol.name; dom.append(title);
+          const detail = document.createElement('span'); detail.textContent = symbol.detail || 'Defined in a previous cell'; dom.append(detail);
+        } else if (connection) {
+          const title = document.createElement('strong'); title.textContent = connection.name; dom.append(title);
+          const detail = document.createElement('span'); detail.textContent = `${connection.type || 'SQL'} connection`; dom.append(detail);
         } else {
           const title = document.createElement('strong'); title.textContent = name; dom.append(title);
           const detail = document.createElement('span'); detail.textContent = pythonDoc; dom.append(detail);
@@ -82,14 +96,14 @@ function languageFor(type) {
   return python();
 }
 
-export function mount({ id, parent, source, type, datasets, onChange, onRun, onRunAndAdvance }) {
+export function mount({ id, parent, source, type, datasets, symbols = [], connections = [], onChange, onRun, onRunAndAdvance }) {
   const language = languageFor(type);
   const view = new EditorView({
     state: EditorState.create({
       doc: source,
       extensions: [
         history(), language, notebookLightTheme, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(),
-        autocompletion({ override: [completionSource(type, datasets)], activateOnTyping: true }), hoverFor(datasets),
+        autocompletion({ override: [completionSource(type, datasets, symbols, connections)], activateOnTyping: true }), hoverFor(datasets, symbols, connections),
         linter(() => []),
         keymap.of([
           { key: 'Ctrl-Space', run: startCompletion },

@@ -12,7 +12,7 @@ let DATASETS = [
   { name: 'product_catalog', kind: 'blue' },
   { name: 'support_tickets', kind: 'orange' },
 ];
-const projectContext = { name: 'Current project', key: '', isDss: false };
+const projectContext = { name: 'Current project', key: '', isDss: false, connections: [], sqlConnection: '' };
 const dss = { enabled: false, loading: false, workspaceLoaded: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
 let dssSaveTimer;
 const diagnosticsTimers = new Map();
@@ -393,8 +393,12 @@ async function loadProjectContext() {
       type: dataset.type || 'Dataset',
       columns: Array.isArray(dataset.columns) ? dataset.columns : [],
     }));
+    projectContext.connections = Array.isArray(payload.connections) ? payload.connections : [];
+    if (!projectContext.connections.some(connection => connection.name === projectContext.sqlConnection)) projectContext.sqlConnection = projectContext.connections[0]?.name || '';
     renderProjectContext();
     renderDatasets(document.querySelector('#dataset-search').value);
+    renderSqlConnectionSelector();
+    renderLinkedDatasets();
   } catch (error) {
     console.warn('Better Notebooks could not load project context; using local examples.', error);
   }
@@ -402,6 +406,28 @@ async function loadProjectContext() {
 function cellIndex(id) { return state.cells.findIndex(cell => cell.id === id); }
 function getCell(id) { return state.cells.find(cell => cell.id === id); }
 function newCell(type = 'python') { return { id: crypto.randomUUID(), type, source: type === 'markdown' ? '## New section' : type === 'sql' ? 'SELECT *\nFROM customers_enriched\nLIMIT 100' : '# Start writing Python', meta: '' }; }
+
+function symbolsBefore(cellId) {
+  const symbols = new Map();
+  state.cells.slice(0, Math.max(cellIndex(cellId), 0)).filter(cell => cell.type === 'python').forEach(cell => {
+    cell.source.matchAll(/^\s*def\s+([A-Za-z_]\w*)\s*(\([^\n)]*\))/gm).forEach(match => symbols.set(match[1], { name: match[1], kind: 'function', detail: `${match[1]}${match[2]} · defined above` }));
+    cell.source.matchAll(/^\s*class\s+([A-Za-z_]\w*)/gm).forEach(match => symbols.set(match[1], { name: match[1], kind: 'class', detail: `${match[1]} · class defined above` }));
+    cell.source.matchAll(/^\s*([A-Za-z_]\w*)\s*=(?!=)/gm).forEach(match => symbols.set(match[1], { name: match[1], kind: 'variable', detail: `${match[1]} · variable defined above` }));
+    cell.source.matchAll(/^\s*(?:from\s+\S+\s+import|import)\s+([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?/gm).forEach(match => { const name = match[2] || match[1]; symbols.set(name, { name, kind: 'variable', detail: `${name} · imported above` }); });
+  });
+  return [...symbols.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function linkedDatasets() {
+  const source = state.cells.map(cell => cell.source || '').join('\n');
+  return DATASETS.filter(dataset => source.includes(`"${dataset.name}"`) || source.includes(`'${dataset.name}'`) || new RegExp(`\\b${dataset.name.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`).test(source));
+}
+function sqlExecutionSource(source) {
+  // SQLExecutor2 is the DSS-supported way to run notebook SQL against an
+  // explicitly selected connection, while keeping the visible cell as SQL.
+  if (!projectContext.sqlConnection) return `%sql\n${source}`;
+  return `from dataiku import SQLExecutor2\n\n_sql_executor = SQLExecutor2(connection=${JSON.stringify(projectContext.sqlConnection)})\n_sql_result = _sql_executor.query_to_df(${JSON.stringify(source)})\n_sql_result`;
+}
 
 function renderDatasets(filter = '') {
   const query = filter.toLowerCase();
@@ -413,7 +439,25 @@ function renderDatasets(filter = '') {
     }).join('')
     : '<p class="dataset-empty">No project datasets found.</p>';
 }
-function outputMarkup(kind) {
+function renderLinkedDatasets() {
+  const container = document.querySelector('#linked-datasets');
+  if (!container) return;
+  const linked = linkedDatasets();
+  container.innerHTML = linked.length
+    ? linked.map(dataset => `<span title="Used by this notebook">● ${escapeHTML(dataset.name)}</span>`).join('')
+    : '<span class="linked-empty">No linked project datasets yet.</span>';
+}
+function renderSqlConnectionSelector() {
+  const selector = document.querySelector('#sql-executor-selector');
+  if (!selector) return;
+  const connections = projectContext.connections;
+  selector.innerHTML = connections.length
+    ? connections.map(connection => `<option value="${escapeHTML(connection.name)}">${escapeHTML(connection.name)}</option>`).join('')
+    : '<option value="">SQL connection</option>';
+  selector.value = projectContext.sqlConnection;
+  selector.title = connections.length ? 'SQL connection for SQL cells' : 'No SQL connection available in this project';
+}
+function outputMarkup(kind, cellId = '') {
   if (kind && typeof kind === 'object' && Array.isArray(kind.outputs)) {
     const rendered = [];
     let streamText = '';
@@ -432,7 +476,7 @@ function outputMarkup(kind) {
         rendered.push(`<pre class="runtime-output error-output">${escapeHTML(outputText([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n')))}</pre>`);
         return;
       }
-      const dataframe = dataframeMarkup(output.data?.['text/html']);
+      const dataframe = dataframeMarkup(output.data?.['text/html'], cellId);
       if (dataframe) {
         rendered.push(dataframe);
         return;
@@ -450,7 +494,7 @@ function outputMarkup(kind) {
 }
 function updateRenderedCellOutput(cell) {
   const node = document.querySelector(`[data-id="${cell.id}"]`); if (!node) return;
-  node.querySelector('.cell-output').innerHTML = cell.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(cell.source)}</div>` : outputMarkup(cell.output);
+  node.querySelector('.cell-output').innerHTML = cell.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(cell.source)}</div>` : outputMarkup(cell.output, cell.id);
 }
 function updateRenderedRunState(cell) {
   const node = document.querySelector(`[data-id="${cell.id}"]`); if (!node) return;
@@ -458,7 +502,7 @@ function updateRenderedRunState(cell) {
   const button = node.querySelector('.run-cell'); button.classList.toggle('is-running', Boolean(cell.running));
   button.title = cell.running ? 'Interrupt execution' : 'Run cell'; button.setAttribute('aria-label', button.title);
 }
-function dataframeMarkup(html) {
+function dataframeMarkup(html, cellId = '') {
   if (!html) return '';
   const document = new DOMParser().parseFromString(outputText(html), 'text/html');
   const sourceTable = document.querySelector('table.dataframe');
@@ -470,7 +514,7 @@ function dataframeMarkup(html) {
   }).join('')}</tr>`).join('');
   const columnCount = sourceTable.querySelector('thead tr')?.cells.length ? sourceTable.querySelector('thead tr').cells.length - 1 : 0;
   const rowCount = sourceTable.querySelectorAll('tbody tr').length;
-  return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><label class="dataframe-filter">⌕<input type="search" placeholder="Filter rows" aria-label="Filter DataFrame rows" /></label><button type="button" class="explore-dataframe">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
+  return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><label class="dataframe-filter">⌕<input type="search" placeholder="Filter rows" aria-label="Filter DataFrame rows" /></label><button type="button" class="create-dataset" data-create-dataset-from-cell="${escapeHTML(cellId)}">Create dataset</button><button type="button" class="explore-dataframe">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
 }
 function markdownMarkup(source) {
   return escapeHTML(source).split('\n').map(line => {
@@ -500,7 +544,7 @@ function renderCells() {
     const language = node.querySelector('.cell-language'); language.classList.add(data.type);
     const editorHost = node.querySelector('.code-editor');
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
-    node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output);
+    node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output, data.id);
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
     const meta = node.querySelector('.execution-meta'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
     node.querySelector('.cell-footer').hidden = !data.meta;
@@ -508,7 +552,7 @@ function renderCells() {
     if (data.running) { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
     cellsEl.appendChild(node);
     editorApi.mount({
-      id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS,
+      id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS, symbols: () => symbolsBefore(data.id), connections: projectContext.connections,
       onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id),
     });
     editorApi.setDiagnostic(data.id, data.diagnostic);
@@ -550,7 +594,7 @@ function renderNotebookNavigation() {
   dss.activeRuntimeId = notebook.runtimeId || dss.activeRuntimeId;
   renderRuntimeSelector();
 }
-function renderWorkspace() { renderProjectContext(); renderNotebookNavigation(); renderDatasets(); renderCells(); }
+function renderWorkspace() { renderProjectContext(); renderNotebookNavigation(); renderSqlConnectionSelector(); renderDatasets(); renderLinkedDatasets(); renderCells(); }
 function closeNotebook(id) {
   const openNotebooks = state.notebooks.notebooks.filter(item => item.open);
   if (openNotebooks.length === 1) return;
@@ -633,7 +677,7 @@ async function deleteActiveNotebook() {
   if (!window.confirm(`Delete “${notebook.name}” from this prototype workspace?`)) return; state.notebooks.notebooks = state.notebooks.notebooks.filter(item => item.id !== notebook.id); if (!state.notebooks.notebooks.length) return; const next = state.notebooks.notebooks[0]; state.activeNotebookId = next.id; state.cells = next.cells; state.selected.clear(); state.activeCellId = null; resetHistory(); persistNotebooks(); renderWorkspace();
 }
 function addFolder() { const modal = document.querySelector('#folder-modal'); modal.classList.remove('hidden'); requestAnimationFrame(() => document.querySelector('#folder-name-input').focus()); }
-function updateCell(id, patch) { const cell = getCell(id); Object.assign(cell, patch); save(); queuePythonCheck(cell); renderOutline(); }
+function updateCell(id, patch) { const cell = getCell(id); Object.assign(cell, patch); save(); queuePythonCheck(cell); renderOutline(); renderLinkedDatasets(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
 function focusCell(id, preventScroll = false) { requestAnimationFrame(() => BetterNotebookEditor.focus(id, preventScroll)); }
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
@@ -645,7 +689,7 @@ async function runCell(id) {
   if (!activeNotebook().remote) { cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : 'table'; save(); renderCells(); return true; }
   const started = performance.now(); cell.meta = 'Running…'; cell.running = true; renderCells();
   try {
-    const source = cell.type === 'sql' ? `%sql\n${cell.source}` : cell.source;
+    const source = cell.type === 'sql' ? sqlExecutionSource(cell.source) : cell.source;
     const result = await executeInDssKernel(activeNotebook(), source, outputs => {
       cell.output = { outputs: [...outputs] }; updateRenderedCellOutput(cell);
     });
@@ -728,6 +772,10 @@ document.querySelector('#executor-selector').addEventListener('change', event =>
     setSavedState('Saving Python environment to DSS…');
   } else if (dss.enabled) setSavedState('Runtime selected for the next DSS notebook');
 });
+document.querySelector('#sql-executor-selector').addEventListener('change', event => {
+  projectContext.sqlConnection = event.target.value;
+  setSavedState(projectContext.sqlConnection ? `SQL connection: ${projectContext.sqlConnection}` : 'No SQL connection selected');
+});
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
 document.querySelector('#new-notebook-button').addEventListener('click', async () => {
   if (dss.enabled) {
@@ -798,9 +846,28 @@ function sortDataframe(table, column) {
   if (direction === 'desc') rows.reverse(); rows.forEach(row => body.append(row));
   table.dataset.sortColumn = String(column); table.dataset.sortDirection = direction;
 }
+async function createDatasetFromDataframe(cellId) {
+  if (!dss.enabled || !projectContext.isDss) { setSavedState('Create datasets is available inside DSS', true); return; }
+  if (!projectContext.sqlConnection) { setSavedState('Select a project connection before creating a dataset', true); return; }
+  const cell = getCell(cellId);
+  const inferred = cell?.source.match(/([A-Za-z_]\w*)\.(?:head|tail|sample|describe)\s*\(/)?.[1]
+    || cell?.source.match(/^\s*([A-Za-z_]\w*)\s*=/m)?.[1] || 'df';
+  const datasetName = window.prompt(`Create a managed dataset from ${inferred}`, `${inferred}_output`)?.trim();
+  if (!datasetName) return;
+  try {
+    setSavedState('Creating managed dataset in DSS…');
+    await dssRequest('datasets', { method: 'POST', body: JSON.stringify({ name: datasetName, connection: projectContext.sqlConnection }) });
+    const writeCell = newCell('python');
+    writeCell.source = `# Materialize ${inferred} as the managed dataset ${datasetName}\noutput_dataset = dataiku.Dataset("${datasetName}")\noutput_dataset.write_with_schema(${inferred})`;
+    insertAfter(cellId, writeCell);
+    await loadProjectContext();
+    setSavedState(`Created ${datasetName}; run the inserted write cell to populate it`);
+  } catch (error) { setSavedState(`Dataset creation failed: ${error.message}`, true); console.warn(error); }
+}
 cellsEl.addEventListener('input', event => { const filter = event.target.closest('.dataframe-filter input'); if (filter) filterDataframe(filter.closest('.dataframe-output'), filter.value); });
 cellsEl.addEventListener('click', event => {
   const header = event.target.closest('[data-sort-column]'); if (header) { sortDataframe(header.closest('table'), Number(header.dataset.sortColumn)); return; }
+  const createDataset = event.target.closest('[data-create-dataset-from-cell]'); if (createDataset) { createDatasetFromDataframe(createDataset.dataset.createDatasetFromCell); return; }
   const explore = event.target.closest('.explore-dataframe'); if (explore) { const section = explore.closest('.dataframe-output'); document.querySelector('#dataframe-modal-content').innerHTML = section.outerHTML; document.querySelector('#dataframe-modal').classList.remove('hidden'); }
 });
 const dataframeModal = document.querySelector('#dataframe-modal');

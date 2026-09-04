@@ -83,9 +83,22 @@ def get_project_context():
                 for column in columns if column.get("name")
             ],
         })
+    connections = []
+    try:
+        for connection in dataiku.api_client().list_connections():
+            name = connection.get("name") or connection.get("connectionName")
+            if name:
+                connections.append({
+                    "name": name,
+                    "type": connection.get("type") or connection.get("connectionType") or "SQL",
+                })
+    except Exception:
+        # Connection discovery can be restricted independently from dataset access.
+        pass
     return jsonify({
         "project": {"key": summary["projectKey"], "name": summary.get("name") or summary["projectKey"]},
         "datasets": sorted(datasets, key=lambda item: item["name"].lower()),
+        "connections": sorted(connections, key=lambda item: item["name"].lower()),
     })
 
 
@@ -189,3 +202,20 @@ def check_python():
 @app.route("/python-runtimes", methods=["GET"])
 def list_python_runtimes():
     return jsonify({"runtimes": available_runtimes()})
+
+
+@app.route("/datasets", methods=["POST"])
+def create_managed_dataset():
+    """Create a DSS managed dataset for an explicit DataFrame write cell."""
+    payload = request.get_json(force=True) or {}
+    name = str(payload.get("name", "")).strip()
+    connection = str(payload.get("connection", "")).strip()
+    if not NOTEBOOK_NAME.match(name):
+        return jsonify({"error": "Dataset names may contain letters, numbers, spaces, dots, dashes, and underscores."}), 400
+    if not connection:
+        return jsonify({"error": "Select a managed-dataset connection first."}), 400
+    try:
+        current_project().new_managed_dataset(name, connection).create()
+    except Exception as error:
+        return jsonify({"error": "Could not create the managed dataset: %s" % error}), 400
+    return jsonify({"dataset": {"name": name, "connection": connection}}), 201

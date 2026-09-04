@@ -48,7 +48,7 @@
 
         <section class="notebook-head">
           <div>
-            <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill" id="kernel-status" data-state="idle">● Idle</span><select class="executor-selector" id="executor-selector" aria-label="Python runtime"><option value="dss_builtin">DSS built-in Python</option></select><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
+            <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill" id="kernel-status" data-state="idle">● Idle</span><select class="executor-selector" id="executor-selector" aria-label="Python runtime"><option value="dss_builtin">DSS built-in Python</option></select><select class="executor-selector secondary" id="sql-executor-selector" aria-label="SQL connection"><option value="">SQL connection</option></select></div>
             <h1 class="notebook-title-row"><span id="notebook-title" tabindex="0" title="Double-click to rename">Explore customer behaviour</span><button class="rename-notebook" id="rename-notebook-button" title="Rename notebook" aria-label="Rename notebook">✎</button></h1>
             <p id="notebook-subtitle">Browser-local notebook workspace</p>
           </div>
@@ -85,6 +85,7 @@
         <label class="dataset-search"><span>⌕</span><input id="dataset-search" type="search" placeholder="Search datasets" /></label>
         <div id="dataset-list" class="dataset-list"></div>
         <div class="dataset-hint"><strong>Tip</strong><span>Click a dataset to add its Dataiku loading snippet to the notebook.</span></div>
+        <div class="linked-datasets"><strong>LINKED IN THIS NOTEBOOK</strong><div id="linked-datasets"></div></div>
       </aside>
     </div>
     <template id="cell-template">
