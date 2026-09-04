@@ -457,6 +457,13 @@ function sqlExecutionSource(source) {
   if (!projectContext.sqlConnection) return `%sql\n${source}`;
   return `from dataiku import SQLExecutor2\n\n_sql_executor = SQLExecutor2(connection=${JSON.stringify(projectContext.sqlConnection)})\n_sql_result = _sql_executor.query_to_df(${JSON.stringify(source)})\n_sql_result`;
 }
+function pythonExecutionSource(source) {
+  // Jupyter normally publishes figures as image/png, but some DSS kernels use
+  // a non-inline Matplotlib backend. Explicitly display only figures created
+  // by this cell so plotting works consistently without re-showing old plots.
+  if (!/(?:matplotlib|plt\.|\.plot\s*\(|\.hist\s*\(|\.scatter\s*\(|\.bar\s*\(|sns\.)/i.test(source)) return source;
+  return `try:\n    from IPython import get_ipython as _bn_get_ipython\n    _bn_get_ipython().run_line_magic('matplotlib', 'inline')\n    import matplotlib.pyplot as _bn_plt\n    _bn_figures_before = set(_bn_plt.get_fignums())\nexcept Exception:\n    _bn_plt = None\n    _bn_figures_before = set()\n\n${source}\n\nif _bn_plt is not None:\n    from IPython.display import display as _bn_display\n    for _bn_number in _bn_plt.get_fignums():\n        if _bn_number not in _bn_figures_before:\n            _bn_display(_bn_plt.figure(_bn_number))`;
+}
 
 function renderDatasets(filter = '') {
   const query = filter.toLowerCase();
@@ -530,6 +537,17 @@ function outputMarkup(kind, cellId = '') {
       flushStream();
       if (output.output_type === 'error') {
         rendered.push(`<pre class="runtime-output error-output">${escapeHTML(outputText([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n')))}</pre>`);
+        return;
+      }
+      const png = output.data?.['image/png'];
+      if (png) {
+        rendered.push(`<figure class="notebook-image-output"><img src="data:image/png;base64,${String(png).replace(/[^A-Za-z0-9+/=]/g, '')}" alt="Notebook plot" /></figure>`);
+        return;
+      }
+      const svg = output.data?.['image/svg+xml'];
+      if (svg) {
+        const svgBase64 = btoa(unescape(encodeURIComponent(String(svg))));
+        rendered.push(`<figure class="notebook-image-output"><img src="data:image/svg+xml;base64,${svgBase64}" alt="Notebook plot" /></figure>`);
         return;
       }
       const dataframe = dataframeMarkup(output.data?.['text/html'], cellId);
@@ -761,7 +779,7 @@ async function runCell(id) {
   if (!activeNotebook().remote) { cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : 'table'; save(); renderCells(); return true; }
   const started = performance.now(); cell.meta = 'Running…'; cell.running = true; renderCells();
   try {
-    const source = cell.type === 'sql' ? sqlExecutionSource(cell.source) : cell.source;
+    const source = cell.type === 'sql' ? sqlExecutionSource(cell.source) : pythonExecutionSource(cell.source);
     const result = await executeInDssKernel(activeNotebook(), source, outputs => {
       cell.output = { outputs: [...outputs] }; updateRenderedCellOutput(cell);
     });
