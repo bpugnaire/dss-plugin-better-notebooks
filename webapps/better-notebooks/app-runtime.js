@@ -730,7 +730,10 @@ document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape') { closeSettings(); closeFolderModal(); return; }
   if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
-  if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); return; }
+  // A focused CodeMirror editor owns its own undo stack. Let it handle Cmd/Ctrl+Z
+  // so the edit is undone in place and the cursor never leaves the cell.
+  if (mod && event.key.toLowerCase() === 'z' && event.target.closest?.('.cm-editor')) return;
+  if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); if (state.activeCellId) focusCell(state.activeCellId, true); return; }
   if (mod && event.key === 'Enter') { event.preventDefault(); (state.selected.size ? [...state.selected] : [document.activeElement.closest?.('.cell')?.dataset.id]).filter(Boolean).forEach(runCell); }
   if (mod && event.key.toLowerCase() === 'c' && state.selected.size) { event.preventDefault(); copySelected(); }
   if (mod && event.key.toLowerCase() === 'x' && state.selected.size) { event.preventDefault(); copySelected(true); }
