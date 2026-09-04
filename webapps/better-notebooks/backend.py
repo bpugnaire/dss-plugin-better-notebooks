@@ -1,5 +1,6 @@
-"""Read-only DSS context plus native notebook discovery and creation."""
+"""DSS project context and native notebook storage adapters."""
 
+import ast
 import re
 
 import dataiku
@@ -7,6 +8,7 @@ from flask import jsonify, request
 
 
 NOTEBOOK_NAME = re.compile(r"^[\w .-]{1,100}$", re.UNICODE)
+MAX_CHECK_SOURCE_LENGTH = 200_000
 
 
 def current_project():
@@ -20,7 +22,12 @@ def available_runtimes():
         "label": "DSS built-in Python",
         "kernelSpec": {"name": "python3", "display_name": "DSS built-in Python", "language": "python"},
     }]
-    for env in dataiku.api_client().list_code_envs():
+    try:
+        code_envs = dataiku.api_client().list_code_envs()
+    except Exception:
+        # A restricted user can still work with the built-in DSS kernel.
+        code_envs = []
+    for env in code_envs:
         language = env.get("envLang") or env.get("language")
         name = env.get("envName") or env.get("name")
         if language == "PYTHON" and name:
@@ -110,6 +117,73 @@ def create_notebook():
     project = current_project()
     project.create_jupyter_notebook(name, empty_notebook(runtime["kernelSpec"]))
     return jsonify({"notebook": project.get_jupyter_notebook(name).get_content().get_raw()}), 201
+
+
+@app.route("/notebooks/<path:notebook_name>", methods=["PUT"])
+def save_notebook(notebook_name):
+    """Persist an edited native notebook, preserving its nbformat document."""
+    payload = request.get_json(force=True) or {}
+    content = payload.get("notebook")
+    if not isinstance(content, dict) or not isinstance(content.get("cells"), list):
+        return jsonify({"error": "A valid Jupyter notebook document is required."}), 400
+    notebook_content = current_project().get_jupyter_notebook(notebook_name).get_content()
+    notebook_content.content = content
+    notebook_content.save()
+    return jsonify({"notebook": notebook_content.get_raw()})
+
+
+@app.route("/notebooks/<path:notebook_name>/rename", methods=["POST"])
+def rename_notebook(notebook_name):
+    """Rename by copy/delete; DSS has no native Jupyter-notebook rename endpoint."""
+    payload = request.get_json(force=True) or {}
+    next_name = str(payload.get("name", "")).strip()
+    if not NOTEBOOK_NAME.match(next_name):
+        return jsonify({"error": "Notebook names may contain letters, numbers, spaces, dots, dashes, and underscores."}), 400
+    if next_name == notebook_name:
+        return jsonify({"name": notebook_name})
+    project = current_project()
+    source = project.get_jupyter_notebook(notebook_name)
+    content = source.get_content().get_raw()
+    project.create_jupyter_notebook(next_name, content)
+    source.delete()
+    return jsonify({"name": next_name})
+
+
+@app.route("/notebooks/<path:notebook_name>/copy", methods=["POST"])
+def copy_notebook(notebook_name):
+    """Copy a native notebook without turning it into a browser-only draft."""
+    payload = request.get_json(force=True) or {}
+    next_name = str(payload.get("name", "")).strip()
+    if not NOTEBOOK_NAME.match(next_name):
+        return jsonify({"error": "Notebook names may contain letters, numbers, spaces, dots, dashes, and underscores."}), 400
+    project = current_project()
+    content = project.get_jupyter_notebook(notebook_name).get_content().get_raw()
+    project.create_jupyter_notebook(next_name, content)
+    return jsonify({"notebook": project.get_jupyter_notebook(next_name).get_content().get_raw()}), 201
+
+
+@app.route("/notebooks/<path:notebook_name>", methods=["DELETE"])
+def delete_notebook(notebook_name):
+    current_project().get_jupyter_notebook(notebook_name).delete()
+    return jsonify({"deleted": notebook_name})
+
+
+@app.route("/python-check", methods=["POST"])
+def check_python():
+    """Return a safe, non-executing Python syntax diagnostic for one cell."""
+    source = str((request.get_json(force=True) or {}).get("source", ""))
+    if len(source) > MAX_CHECK_SOURCE_LENGTH:
+        return jsonify({"valid": False, "message": "Cell is too large to check.", "line": None, "column": None}), 400
+    try:
+        ast.parse(source)
+    except SyntaxError as error:
+        return jsonify({
+            "valid": False,
+            "message": error.msg,
+            "line": error.lineno,
+            "column": error.offset,
+        })
+    return jsonify({"valid": True})
 
 
 @app.route("/python-runtimes", methods=["GET"])

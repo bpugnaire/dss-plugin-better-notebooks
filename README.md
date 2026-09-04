@@ -29,8 +29,14 @@ needed for the current UI workflow.
 4. Open its settings and keep the default browser storage namespace, or set a
    unique one for an isolated prototype workspace.
 
-Inside DSS, the dataset panel now loads the names of datasets visible in the
-current project through a read-only backend endpoint. Notebook state, execution,
-schemas, and outputs remain browser-local illustrative behavior; the component
-does not yet read or modify native DSS notebooks. See
-[architecture](docs/architecture.md) for the next implementation phases.
+Inside DSS, Better Notebooks reads the native Jupyter notebooks available in
+the project. Edits to cells, Markdown, cell ordering, and the selected Python
+environment autosave back to the same native DSS notebook. Creating, copying,
+renaming, and deleting a notebook also operate on native DSS notebooks. The
+left-hand folder tree stays browser-local by design: DSS has no notebook-folder
+structure to mirror.
+
+Python cells receive a non-executing syntax check while typing. Native kernel
+execution and SQL warehouse execution are deliberately not simulated yet; they
+need a tested DSS execution bridge before the Run controls can return real
+output. See [architecture](docs/architecture.md) for the remaining work.

@@ -12,6 +12,8 @@ let DATASETS = [
 ];
 const projectContext = { name: 'Current project', key: '', isDss: false };
 const dss = { enabled: false, runtimes: [], activeRuntimeId: 'dss_builtin' };
+let dssSaveTimer;
+const diagnosticsTimers = new Map();
 
 const TABLE = {
   columns: [['customer_id', 'string'], ['country', 'string'], ['orders', 'int'], ['lifetime_value', 'decimal'], ['last_order', 'date']],
@@ -78,7 +80,8 @@ function save(recordHistory = true) {
       state.historyIndex = state.history.length - 1;
     }
   }
-  setSavedState(activeNotebook().remote ? 'DSS notebook · changes not saved yet' : 'Saved locally');
+  if (activeNotebook().remote) queueDssSave(activeNotebook());
+  else setSavedState('Saved locally');
 }
 function undo() {
   if (state.historyIndex <= 0) return;
@@ -104,10 +107,58 @@ function setSavedState(message, isError = false) {
   status.classList.toggle('error', isError);
 }
 function sourceText(source) { return Array.isArray(source) ? source.join('') : String(source || ''); }
+function sourceLines(source) { return source ? source.match(/[^\n]*\n|[^\n]+/g) || [] : []; }
+function dssDocumentFor(notebook) {
+  const document = structuredClone(notebook.dssContent || { nbformat: 4, nbformat_minor: 5, metadata: {} });
+  document.metadata = document.metadata || {};
+  const runtime = dss.runtimes.find(item => item.id === notebook.runtimeId);
+  if (runtime?.kernelSpec) document.metadata.kernelspec = runtime.kernelSpec;
+  document.cells = notebook.cells.map(cell => {
+    const metadata = { ...(cell.dssCell?.metadata || {}) };
+    if (cell.type === 'sql') metadata.betterNotebooks = { ...(metadata.betterNotebooks || {}), cellType: 'sql' };
+    else if (metadata.betterNotebooks?.cellType === 'sql') delete metadata.betterNotebooks.cellType;
+    return {
+      ...(cell.dssCell || {}), metadata, cell_type: cell.type === 'markdown' ? 'markdown' : 'code',
+      source: sourceLines(cell.source), execution_count: cell.dssCell?.execution_count ?? null,
+      outputs: cell.dssCell?.outputs || [],
+    };
+  });
+  return document;
+}
+async function saveDssNotebook(notebook) {
+  const payload = await dssRequest(`notebooks/${encodeURIComponent(notebook.name)}`, {
+    method: 'PUT', body: JSON.stringify({ notebook: dssDocumentFor(notebook) }),
+  });
+  notebook.dssContent = payload.notebook;
+}
+function queueDssSave(notebook) {
+  clearTimeout(dssSaveTimer); setSavedState('Saving to DSS…');
+  dssSaveTimer = setTimeout(async () => {
+    try { await saveDssNotebook(notebook); setSavedState('Saved to DSS'); }
+    catch (error) { setSavedState(`DSS save failed: ${error.message}`, true); console.warn(error); }
+  }, 650);
+}
+async function flushDssSave(notebook) {
+  clearTimeout(dssSaveTimer);
+  setSavedState('Saving to DSS…');
+  await saveDssNotebook(notebook);
+}
+function queuePythonCheck(cell) {
+  if (!dss.enabled || cell.type !== 'python') return;
+  clearTimeout(diagnosticsTimers.get(cell.id));
+  diagnosticsTimers.set(cell.id, setTimeout(async () => {
+    try {
+      const result = await dssRequest('python-check', { method: 'POST', body: JSON.stringify({ source: cell.source }) });
+      cell.diagnostic = result.valid ? null : result;
+    } catch (error) { cell.diagnostic = { message: 'Syntax check unavailable' }; }
+    const diagnostic = document.querySelector(`[data-id="${cell.id}"] .cell-diagnostic`);
+    if (diagnostic) { diagnostic.hidden = !cell.diagnostic; diagnostic.textContent = cell.diagnostic ? `Line ${cell.diagnostic.line || '?'}: ${cell.diagnostic.message}` : ''; }
+  }, 500));
+}
 function cellsFromDss(raw) {
   return (raw.cells || []).map(cell => ({
     id: crypto.randomUUID(),
-    type: cell.cell_type === 'markdown' ? 'markdown' : 'python',
+    type: cell.cell_type === 'markdown' ? 'markdown' : cell.metadata?.betterNotebooks?.cellType === 'sql' ? 'sql' : 'python',
     source: sourceText(cell.source),
     meta: cell.execution_count ? `Previously run · #${cell.execution_count}` : '',
     output: '',
@@ -235,6 +286,7 @@ function renderCells() {
     textarea.placeholder = data.type === 'markdown' ? 'Write Markdown' : data.type === 'sql' ? 'Write SQL' : 'Write Python';
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output);
+    const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
     const meta = node.querySelector('.execution-meta'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
     node.querySelector('.cell-footer').hidden = !data.meta;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
@@ -290,7 +342,7 @@ function closeNotebook(id) {
 }
 function renameActiveNotebook() {
   const title = document.querySelector('#notebook-title'); const notebook = activeNotebook();
-  if (notebook.remote) { setSavedState('Renaming native DSS notebooks is not enabled yet'); return; }
+  if (notebook.remote) { renameRemoteNotebook(notebook); return; }
   if (title.querySelector('input')) return;
   title.innerHTML = `<input id="notebook-rename-input" value="${escapeHTML(notebook.name)}" aria-label="Notebook name" />`;
   const input = title.querySelector('input'); input.focus(); input.select();
@@ -298,9 +350,21 @@ function renameActiveNotebook() {
   input.addEventListener('blur', commit, { once: true });
   input.addEventListener('keydown', event => { if (event.key === 'Enter') input.blur(); if (event.key === 'Escape') { input.value = notebook.name; input.blur(); } });
 }
+async function renameRemoteNotebook(notebook) {
+  const nextName = window.prompt(`Rename “${notebook.name}”`, notebook.name)?.trim();
+  if (!nextName || nextName === notebook.name) return;
+  if (!window.confirm(`Rename “${notebook.name}” to “${nextName}”? DSS will copy the notebook, then remove the old notebook and any active session.`)) return;
+  try {
+    await flushDssSave(notebook);
+    setSavedState('Renaming in DSS…');
+    const payload = await dssRequest(`notebooks/${encodeURIComponent(notebook.name)}/rename`, { method: 'POST', body: JSON.stringify({ name: nextName }) });
+    notebook.id = payload.name; notebook.name = payload.name; state.activeNotebookId = payload.name; state.notebooks.activeNotebookId = payload.name;
+    renderWorkspace(); setSavedState('Renamed in DSS');
+  } catch (error) { setSavedState(`DSS rename failed: ${error.message}`, true); console.warn(error); }
+}
 function renameNotebookInTree(id) {
   const notebook = state.notebooks.notebooks.find(item => item.id === id); const row = document.querySelector(`[data-drag-notebook-id="${id}"]`); if (!notebook || !row) return;
-  if (notebook.remote) { setSavedState('Renaming native DSS notebooks is not enabled yet'); return; }
+  if (notebook.remote) { renameRemoteNotebook(notebook); return; }
   const button = row.querySelector('.project-notebook'); button.innerHTML = `<input class="tree-rename" value="${escapeHTML(notebook.name)}" aria-label="Notebook name" />`;
   const input = button.querySelector('input'); input.focus(); input.select();
   const commit = () => { const name = input.value.trim(); if (name) { notebook.name = name; notebook.updatedAt = Date.now(); persistNotebooks(); } renderNotebookNavigation(); };
@@ -313,14 +377,45 @@ function renameFolderInTree(id) {
   const commit = () => { const name = input.value.trim(); if (name) { folder.name = name; persistNotebooks(); } renderNotebookNavigation(); };
   input.addEventListener('blur', commit, { once: true }); input.addEventListener('keydown', event => { if (event.key === 'Enter') input.blur(); if (event.key === 'Escape') { input.value = folder.name; input.blur(); } });
 }
-function copyActiveNotebook() { const source = activeNotebook(); const copy = { ...source, id: crypto.randomUUID(), name: `Copy of ${source.name}`, cells: cloneCells(source.cells), open: true, updatedAt: Date.now() }; state.notebooks.notebooks.push(copy); switchNotebook(copy.id); }
-function deleteActiveNotebook() { const notebook = activeNotebook(); if (!window.confirm(`Delete “${notebook.name}” from this prototype workspace?`)) return; state.notebooks.notebooks = state.notebooks.notebooks.filter(item => item.id !== notebook.id); if (!state.notebooks.notebooks.length) return; const next = state.notebooks.notebooks[0]; state.activeNotebookId = next.id; state.cells = next.cells; state.selected.clear(); state.activeCellId = null; resetHistory(); persistNotebooks(); renderWorkspace(); }
+async function copyActiveNotebook() {
+  const source = activeNotebook();
+  if (source.remote) {
+    const name = window.prompt(`Copy “${source.name}” as`, `Copy of ${source.name}`)?.trim();
+    if (!name) return;
+    try {
+      await flushDssSave(source);
+      setSavedState('Copying in DSS…');
+      const payload = await dssRequest(`notebooks/${encodeURIComponent(source.name)}/copy`, { method: 'POST', body: JSON.stringify({ name }) });
+      const copy = { id: name, name, language: 'PYTHON', cells: cellsFromDss(payload.notebook), open: true, updatedAt: Date.now(), folderId: source.folderId, remote: true, loaded: true, dssContent: payload.notebook, runtimeId: runtimeIdFor(payload.notebook.metadata?.kernelspec) };
+      state.notebooks.notebooks.push(copy); await switchNotebook(copy.id); setSavedState('Copied in DSS');
+    } catch (error) { setSavedState(`DSS copy failed: ${error.message}`, true); console.warn(error); }
+    return;
+  }
+  const copy = { ...source, id: crypto.randomUUID(), name: `Copy of ${source.name}`, cells: cloneCells(source.cells), open: true, updatedAt: Date.now() }; state.notebooks.notebooks.push(copy); switchNotebook(copy.id);
+}
+async function deleteActiveNotebook() {
+  const notebook = activeNotebook();
+  if (notebook.remote) {
+    const next = state.notebooks.notebooks.find(item => item.id !== notebook.id);
+    if (!next) { setSavedState('Create another notebook before deleting the last open notebook'); return; }
+    if (!window.confirm(`Permanently delete native DSS notebook “${notebook.name}”? This also stops active sessions.`)) return;
+    try {
+      clearTimeout(dssSaveTimer);
+      setSavedState('Deleting from DSS…');
+      await dssRequest(`notebooks/${encodeURIComponent(notebook.name)}`, { method: 'DELETE' });
+      state.notebooks.notebooks = state.notebooks.notebooks.filter(item => item.id !== notebook.id);
+      state.activeNotebookId = next.id; await switchNotebook(next.id); renderWorkspace(); setSavedState('Deleted from DSS');
+    } catch (error) { setSavedState(`DSS delete failed: ${error.message}`, true); console.warn(error); }
+    return;
+  }
+  if (!window.confirm(`Delete “${notebook.name}” from this prototype workspace?`)) return; state.notebooks.notebooks = state.notebooks.notebooks.filter(item => item.id !== notebook.id); if (!state.notebooks.notebooks.length) return; const next = state.notebooks.notebooks[0]; state.activeNotebookId = next.id; state.cells = next.cells; state.selected.clear(); state.activeCellId = null; resetHistory(); persistNotebooks(); renderWorkspace();
+}
 function addFolder() { const modal = document.querySelector('#folder-modal'); modal.classList.remove('hidden'); requestAnimationFrame(() => document.querySelector('#folder-name-input').focus()); }
-function updateCell(id, patch) { Object.assign(getCell(id), patch); save(); renderOutline(); }
+function updateCell(id, patch) { const cell = getCell(id); Object.assign(cell, patch); save(); queuePythonCheck(cell); renderOutline(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
 function focusCell(id, preventScroll = false) { requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] .code-input`)?.focus({ preventScroll })); }
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
-function runCell(id) { const cell = getCell(id); state.activeCellId = id; cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : cell.type === 'markdown' ? '' : 'table'; save(); renderCells(); }
+function runCell(id) { if (activeNotebook().remote) { setSavedState('Native kernel execution bridge is not connected yet'); return; } const cell = getCell(id); state.activeCellId = id; cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : cell.type === 'markdown' ? '' : 'table'; save(); renderCells(); }
 function selectCell(id, selected) { selected ? state.selected.add(id) : state.selected.delete(id); renderCells(); }
 function duplicateSelected() { const selection = state.cells.filter(cell => state.selected.has(cell.id)); if (!selection.length) return; const last = Math.max(...selection.map(cell => cellIndex(cell.id))); const copies = selection.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); state.cells.splice(last + 1, 0, ...copies); state.selected = new Set(copies.map(cell => cell.id)); save(); renderCells(); }
 function copySelected(remove = false) { const selected = state.cells.filter(cell => state.selected.has(cell.id)); if (!selected.length) return; state.clipboard = selected.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); if (remove) { state.cells = state.cells.filter(cell => !state.selected.has(cell.id)); state.selected.clear(); } save(); renderCells(); }
@@ -340,7 +435,7 @@ cellsEl.addEventListener('click', event => {
   if (event.target.closest('.delete-cell')) { state.selected = new Set([id]); deleteSelected(); }
   if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
   const typeOption = event.target.closest('[data-cell-type]');
-  if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); renderCells(); }
+  if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); queuePythonCheck(target); renderCells(); }
   if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.querySelector('.code-input').classList.add('editing'); cell.querySelector('.code-input').focus(); autoHeight(cell.querySelector('.code-input')); }
 });
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
@@ -352,12 +447,20 @@ cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.cl
 cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCell(state.dragId, cell.dataset.id); });
 cellsEl.addEventListener('dragend', () => { state.dragId = null; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target')); });
 
-document.querySelector('#run-all').addEventListener('click', () => { state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells(); });
+document.querySelector('#run-all').addEventListener('click', () => {
+  if (activeNotebook().remote) { setSavedState('Native kernel execution bridge is not connected yet'); return; }
+  state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => { cell.meta = 'Ran just now · 0.20s'; cell.output = cell.type === 'sql' ? 'query' : 'table'; }); save(); renderCells();
+});
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#refresh-datasets').addEventListener('click', loadProjectContext);
 document.querySelector('#executor-selector').addEventListener('change', event => {
   dss.activeRuntimeId = event.target.value;
-  if (dss.enabled) setSavedState('Runtime selected for the next DSS notebook');
+  const notebook = activeNotebook();
+  if (dss.enabled && notebook?.remote) {
+    notebook.runtimeId = dss.activeRuntimeId;
+    save(false);
+    setSavedState('Saving Python environment to DSS…');
+  } else if (dss.enabled) setSavedState('Runtime selected for the next DSS notebook');
 });
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (!dataset) return; const cell = newCell('python'); cell.source = `import dataiku\n\n${dataset.dataset.dataset.replace(/\W/g, '_')} = dataiku.Dataset("${dataset.dataset.dataset}").get_dataframe()\n${dataset.dataset.dataset.replace(/\W/g, '_')}.head()`; state.cells.push(cell); save(); renderCells(); focusCell(cell.id); });
 document.querySelector('#new-notebook-button').addEventListener('click', async () => {
