@@ -21,6 +21,21 @@ python3 -m http.server 4173
 Then open `http://127.0.0.1:4173`. No build process or Dataiku instance is
 needed for the current UI workflow.
 
+## Rebuild the packaged editor
+
+The Dataiku webapp ships a checked-in CodeMirror bundle at
+`webapps/better-notebooks/vendor/codemirror.js`, so DSS never needs access to
+a CDN. After editing `webapps/better-notebooks/editor.js`, run:
+
+```bash
+pnpm install
+pnpm run build:editor
+```
+
+The bundle adds Python/SQL syntax highlighting, project-aware completion,
+hover cards for visible datasets and columns, Tab completion/indentation, and
+inline Python syntax diagnostics.
+
 ## Install in a Dataiku development instance
 
 1. Create or open a development plugin and copy this repository into it.

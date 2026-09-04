@@ -1,3 +1,4 @@
+    <script src="vendor/codemirror.js"></script>
     <div class="app-shell">
       <aside class="sidebar explorer-view" aria-label="Notebook navigation">
         <nav class="sidebar-rail" aria-label="Sidebar views">
@@ -85,7 +86,7 @@
         <div class="cell-rail"><button class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</button><input class="cell-check" type="checkbox" aria-label="Select cell" /></div>
         <div class="cell-content">
           <header class="cell-header"><div class="cell-type"><button class="cell-type-selector" title="Change cell type"><span class="cell-language"></span><span class="type-chevron">⌄</span></button><div class="type-options" role="menu"><button data-cell-type="python" role="menuitem"><span>⌘</span> Python</button><button data-cell-type="sql" role="menuitem"><span>▤</span> SQL</button><button data-cell-type="markdown" role="menuitem"><span>¶</span> Markdown</button></div></div><div class="cell-actions"><button class="run-cell" title="Run cell">▶</button><button class="ai-help" title="Ask AI for help" aria-label="Ask AI for help">✦</button><button class="delete-cell icon-delete" title="Delete cell" aria-label="Delete cell">⌫</button><button class="more-cell" title="More actions" aria-label="More actions">⋮</button></div></header>
-          <textarea class="code-input" spellcheck="false" aria-label="Cell code"></textarea>
+          <div class="code-editor" aria-label="Cell code"></div>
           <div class="cell-diagnostic" role="status" hidden></div>
           <div class="cell-output"></div>
           <div class="cell-footer"><span class="execution-meta"></span></div>

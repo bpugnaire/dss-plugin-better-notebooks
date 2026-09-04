@@ -1,0 +1,123 @@
+import { EditorState } from '@codemirror/state';
+import { EditorView, keymap, hoverTooltip } from '@codemirror/view';
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, startCompletion } from '@codemirror/autocomplete';
+import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language';
+import { linter, setDiagnostics } from '@codemirror/lint';
+import { python } from '@codemirror/lang-python';
+import { sql } from '@codemirror/lang-sql';
+import { markdown } from '@codemirror/lang-markdown';
+import { oneDark } from '@codemirror/theme-one-dark';
+
+const editors = new Map();
+
+const PYTHON_WORDS = [
+  'abs', 'all', 'any', 'bool', 'dict', 'enumerate', 'filter', 'float', 'int', 'len', 'list', 'map', 'max', 'min',
+  'print', 'range', 'set', 'sorted', 'str', 'sum', 'tuple', 'zip', 'dataiku', 'pandas', 'pd', 'True', 'False', 'None',
+].map(label => ({ label, type: 'keyword' }));
+const SQL_WORDS = [
+  'SELECT', 'FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'LIMIT', 'JOIN', 'LEFT JOIN', 'INNER JOIN', 'COUNT', 'AVG', 'SUM',
+].map(label => ({ label, type: 'keyword' }));
+const PYTHON_HOVERS = {
+  len: 'len(object) → number of items',
+  print: 'print(*objects) → writes a text representation',
+  range: 'range(start, stop, step) → integer sequence',
+  sorted: 'sorted(iterable) → new sorted list',
+  dataiku: 'Dataiku Python API module',
+};
+
+function completionSource(type, datasets) {
+  return context => {
+    const word = context.matchBefore(/[\w.]*/);
+    if (!context.explicit && (!word || word.from === word.to)) return null;
+    const datasetOptions = datasets.flatMap(dataset => [
+      { label: dataset.name, type: 'variable', detail: 'Project dataset' },
+      ...(dataset.columns || []).map(column => ({ label: column.name, type: 'property', detail: `${dataset.name} · ${column.type || 'column'}` })),
+    ]);
+    const options = type === 'sql' ? [...SQL_WORDS, ...datasetOptions] : [...PYTHON_WORDS, ...datasetOptions];
+    return { from: word ? word.from : context.pos, options, validFor: /[\w.]*/ };
+  };
+}
+
+function hoverFor(datasets) {
+  return hoverTooltip((view, pos) => {
+    const word = view.state.wordAt(pos);
+    if (!word) return null;
+    const name = view.state.sliceDoc(word.from, word.to);
+    const dataset = datasets.find(item => item.name === name);
+    const column = datasets.flatMap(item => (item.columns || []).map(value => ({ dataset: item, column: value }))).find(item => item.column.name === name);
+    const pythonDoc = PYTHON_HOVERS[name];
+    if (!dataset && !column && !pythonDoc) return null;
+    return {
+      pos: word.from, end: word.to, above: true,
+      create() {
+        const dom = document.createElement('div'); dom.className = 'cm-project-hover';
+        if (dataset) {
+          const title = document.createElement('strong'); title.textContent = dataset.name; dom.append(title);
+          const detail = document.createElement('span'); detail.textContent = `${dataset.type || 'Dataset'} · ${(dataset.columns || []).length} columns`; dom.append(detail);
+        } else if (column) {
+          const title = document.createElement('strong'); title.textContent = column.column.name; dom.append(title);
+          const detail = document.createElement('span'); detail.textContent = `${column.dataset.name} · ${column.column.type || 'column'}`; dom.append(detail);
+        } else {
+          const title = document.createElement('strong'); title.textContent = name; dom.append(title);
+          const detail = document.createElement('span'); detail.textContent = pythonDoc; dom.append(detail);
+        }
+        return { dom };
+      },
+    };
+  });
+}
+
+function languageFor(type) {
+  if (type === 'sql') return sql();
+  if (type === 'markdown') return markdown();
+  return python();
+}
+
+export function mount({ id, parent, source, type, datasets, onChange, onRun, onRunAndAdvance }) {
+  const language = languageFor(type);
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: source,
+      extensions: [
+        history(), language, oneDark, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(),
+        autocompletion({ override: [completionSource(type, datasets)], activateOnTyping: true }), hoverFor(datasets),
+        linter(() => []),
+        keymap.of([
+          { key: 'Ctrl-Space', run: startCompletion },
+          { key: 'Tab', run: acceptCompletion },
+          { key: 'Shift-Enter', run: () => { onRunAndAdvance(); return true; } },
+          { key: 'Mod-Enter', run: () => { onRun(); return true; } },
+          indentWithTab, ...closeBracketsKeymap, ...completionKeymap, ...historyKeymap, ...defaultKeymap,
+        ]),
+        EditorView.updateListener.of(update => {
+          if (update.docChanged) onChange(update.state.doc.toString());
+        }),
+      ],
+    }),
+    parent,
+  });
+  editors.set(id, view);
+  return view;
+}
+
+export function setDiagnostic(id, diagnostic) {
+  const view = editors.get(id); if (!view) return;
+  const diagnostics = diagnostic ? (() => {
+    const line = Math.min(Math.max(diagnostic.line || 1, 1), view.state.doc.lines);
+    const from = Math.min(view.state.doc.line(line).from + Math.max((diagnostic.column || 1) - 1, 0), view.state.doc.length);
+    return [{ from, to: Math.min(from + 1, view.state.doc.length), severity: 'error', message: diagnostic.message || 'Syntax error' }];
+  })() : [];
+  view.dispatch({ effects: setDiagnostics(view.state, diagnostics) });
+}
+
+export function focus(id, preventScroll = false) {
+  const view = editors.get(id); if (!view) return;
+  view.focus();
+  if (!preventScroll) view.dom.scrollIntoView({ block: 'nearest' });
+}
+
+export function destroyAll() {
+  editors.forEach(view => view.destroy());
+  editors.clear();
+}

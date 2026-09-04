@@ -251,6 +251,7 @@ function queuePythonCheck(cell) {
       const result = await dssRequest('python-check', { method: 'POST', body: JSON.stringify({ source: cell.source }) });
       cell.diagnostic = result.valid ? null : result;
     } catch (error) { cell.diagnostic = { message: 'Syntax check unavailable' }; }
+    BetterNotebookEditor?.setDiagnostic(cell.id, cell.diagnostic);
     const diagnostic = document.querySelector(`[data-id="${cell.id}"] .cell-diagnostic`);
     if (diagnostic) { diagnostic.hidden = !cell.diagnostic; diagnostic.textContent = cell.diagnostic ? `Line ${cell.diagnostic.line || '?'}: ${cell.diagnostic.message}` : ''; }
   }, 500));
@@ -388,6 +389,7 @@ function markdownMarkup(source) {
 function autoHeight(textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`; }
 function renderCells() {
   const scrollY = window.scrollY;
+  BetterNotebookEditor?.destroyAll();
   cellsEl.innerHTML = '';
   state.cells.forEach((data, index) => {
     const node = template.content.firstElementChild.cloneNode(true);
@@ -395,15 +397,19 @@ function renderCells() {
     if (state.selected.has(data.id)) node.classList.add('selected');
     if (state.activeCellId === data.id) node.classList.add('active');
     const language = node.querySelector('.cell-language'); language.classList.add(data.type);
-    const textarea = node.querySelector('.code-input'); textarea.value = data.source;
-    textarea.placeholder = data.type === 'markdown' ? 'Write Markdown' : data.type === 'sql' ? 'Write SQL' : 'Write Python';
+    const editorHost = node.querySelector('.code-editor');
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output);
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
     const meta = node.querySelector('.execution-meta'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
     node.querySelector('.cell-footer').hidden = !data.meta;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
-    cellsEl.appendChild(node); autoHeight(textarea);
+    cellsEl.appendChild(node);
+    BetterNotebookEditor.mount({
+      id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS,
+      onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id),
+    });
+    BetterNotebookEditor.setDiagnostic(data.id, data.diagnostic);
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
   });
   renderToolbar(); renderOutline();
@@ -526,7 +532,7 @@ async function deleteActiveNotebook() {
 function addFolder() { const modal = document.querySelector('#folder-modal'); modal.classList.remove('hidden'); requestAnimationFrame(() => document.querySelector('#folder-name-input').focus()); }
 function updateCell(id, patch) { const cell = getCell(id); Object.assign(cell, patch); save(); queuePythonCheck(cell); renderOutline(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
-function focusCell(id, preventScroll = false) { requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] .code-input`)?.focus({ preventScroll })); }
+function focusCell(id, preventScroll = false) { requestAnimationFrame(() => BetterNotebookEditor?.focus(id, preventScroll)); }
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
 async function runCell(id) {
   const cell = getCell(id); if (!cell) return;
@@ -545,6 +551,12 @@ async function runCell(id) {
     cell.meta = 'Execution failed'; cell.output = { outputs: [{ output_type: 'error', ename: 'DSS execution error', evalue: error.message, traceback: [] }] };
     renderCells(); setSavedState(`Execution failed: ${error.message}`, true); console.warn(error);
   }
+}
+async function runAndAdvance(id) {
+  const nextId = state.cells[cellIndex(id) + 1]?.id;
+  await runCell(id);
+  if (nextId) { setActiveCell(nextId); focusCell(nextId); return; }
+  const newCodeCell = newCell('python'); newCodeCell.source = ''; state.cells.push(newCodeCell); state.activeCellId = newCodeCell.id; save(); renderCells(); focusCell(newCodeCell.id, true);
 }
 function selectCell(id, selected) { selected ? state.selected.add(id) : state.selected.delete(id); renderCells(); }
 function duplicateSelected() { const selection = state.cells.filter(cell => state.selected.has(cell.id)); if (!selection.length) return; const last = Math.max(...selection.map(cell => cellIndex(cell.id))); const copies = selection.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); state.cells.splice(last + 1, 0, ...copies); state.selected = new Set(copies.map(cell => cell.id)); save(); renderCells(); }
@@ -566,12 +578,12 @@ cellsEl.addEventListener('click', event => {
   if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
   const typeOption = event.target.closest('[data-cell-type]');
   if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); queuePythonCheck(target); renderCells(); }
-  if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.querySelector('.code-input').classList.add('editing'); cell.querySelector('.code-input').focus(); autoHeight(cell.querySelector('.code-input')); }
+  if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.querySelector('.code-editor').classList.add('editing'); focusCell(id); }
 });
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
-cellsEl.addEventListener('focusout', event => { if (event.target.matches('.code-input.editing')) { event.target.classList.remove('editing'); event.target.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
+cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
 cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter, newCell(button.dataset.insertType)); });
-cellsEl.addEventListener('dragstart', event => { const cell = event.target.closest('.cell'); if (!cell || event.target.closest('textarea')) { event.preventDefault(); return; } state.dragId = cell.dataset.id; cell.classList.add('dragging'); });
+cellsEl.addEventListener('dragstart', event => { const cell = event.target.closest('.cell'); if (!cell || event.target.closest('.code-editor')) { event.preventDefault(); return; } state.dragId = cell.dataset.id; cell.classList.add('dragging'); });
 cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell && cell.dataset.id !== state.dragId) cell.classList.add('drop-target'); });
 cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.classList.remove('drop-target'));
 cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCell(state.dragId, cell.dataset.id); });
@@ -650,7 +662,7 @@ settingsModal.addEventListener('click', event => { if (event.target === settings
 document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape') { closeSettings(); closeFolderModal(); return; }
-  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) { const currentId = cell.dataset.id; const nextId = state.cells[cellIndex(currentId) + 1]?.id; await runCell(currentId); if (nextId) { setActiveCell(nextId); document.querySelector(`[data-id="${nextId}"] .code-input, [data-id="${nextId}"] .markdown-render`)?.focus(); } else { const newCodeCell = newCell('python'); newCodeCell.source = ''; state.cells.push(newCodeCell); state.activeCellId = newCodeCell.id; save(); renderCells(); focusCell(newCodeCell.id, true); } } return; }
+  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
   if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); return; }
   if (mod && event.key === 'Enter') { event.preventDefault(); (state.selected.size ? [...state.selected] : [document.activeElement.closest?.('.cell')?.dataset.id]).filter(Boolean).forEach(runCell); }
   if (mod && event.key.toLowerCase() === 'c' && state.selected.size) { event.preventDefault(); copySelected(); }

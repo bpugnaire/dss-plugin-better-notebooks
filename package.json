@@ -1,0 +1,20 @@
+{
+  "name": "dss-plugin-better-notebooks",
+  "private": true,
+  "scripts": {
+    "build:editor": "esbuild webapps/better-notebooks/editor.js --bundle --format=iife --global-name=BetterNotebookEditor --target=es2020 --outfile=webapps/better-notebooks/vendor/codemirror.js"
+  },
+  "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.0",
+    "@codemirror/commands": "^6.10.0",
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/language": "^6.12.0",
+    "@codemirror/lint": "^6.9.2",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.39.9",
+    "@codemirror/theme-one-dark": "^6.1.2",
+    "esbuild": "^0.27.0"
+  }
+}
