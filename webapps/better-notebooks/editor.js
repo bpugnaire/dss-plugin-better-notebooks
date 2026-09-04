@@ -67,8 +67,8 @@ function completionSource(type, datasets, symbols = [], connections = []) {
   };
 }
 
-function hoverFor(datasets, symbols = [], connections = []) {
-  return hoverTooltip((view, pos) => {
+function hoverFor(datasets, symbols = [], connections = [], onInspect = null) {
+  return hoverTooltip(async (view, pos) => {
     const word = view.state.wordAt(pos);
     if (!word) return null;
     const name = view.state.sliceDoc(word.from, word.to);
@@ -78,12 +78,18 @@ function hoverFor(datasets, symbols = [], connections = []) {
     const liveSymbols = typeof symbols === 'function' ? symbols() : symbols;
     const symbol = liveSymbols.find(item => item.name === name);
     const connection = connections.find(item => item.name === name);
-    if (!dataset && !column && !pythonDoc && !symbol && !connection) return null;
+    // A running Jupyter kernel can return the actual runtime docstring and
+    // signature (the same notebook inspection protocol used by Jupyter UIs).
+    const inspected = onInspect ? await onInspect({ code: view.state.doc.toString(), pos: word.to }) : '';
+    if (!dataset && !column && !pythonDoc && !symbol && !connection && !inspected) return null;
     return {
       pos: word.from, end: word.to, above: true,
       create() {
         const dom = document.createElement('div'); dom.className = 'cm-project-hover';
-        if (dataset) {
+        if (inspected) {
+          const title = document.createElement('strong'); title.textContent = name; dom.append(title);
+          const detail = document.createElement('span'); detail.textContent = inspected.slice(0, 1800); dom.append(detail);
+        } else if (dataset) {
           const title = document.createElement('strong'); title.textContent = dataset.name; dom.append(title);
           const detail = document.createElement('span'); detail.textContent = `${dataset.type || 'Dataset'} · ${(dataset.columns || []).length} columns`; dom.append(detail);
         } else if (column) {
@@ -111,14 +117,14 @@ function languageFor(type) {
   return python();
 }
 
-export function mount({ id, parent, source, type, datasets, symbols = [], connections = [], onChange, onRun, onRunAndAdvance }) {
+export function mount({ id, parent, source, type, datasets, symbols = [], connections = [], onChange, onRun, onRunAndAdvance, onInspect = null }) {
   const language = languageFor(type);
   const view = new EditorView({
     state: EditorState.create({
       doc: source,
       extensions: [
         history(), language, notebookLightTheme, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(),
-        autocompletion({ override: [completionSource(type, datasets, symbols, connections)], activateOnTyping: true, activateOnTypingDelay: 120 }), hoverFor(datasets, symbols, connections),
+        autocompletion({ override: [completionSource(type, datasets, symbols, connections)], activateOnTyping: true, activateOnTypingDelay: 120 }), hoverFor(datasets, symbols, connections, onInspect),
         linter(() => []),
         keymap.of([
           { key: 'Ctrl-Space', run: startCompletion },

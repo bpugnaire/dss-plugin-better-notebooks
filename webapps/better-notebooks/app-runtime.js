@@ -184,6 +184,13 @@ function handleJupyterMessage(event) {
   if (!kernel) return;
   const request = kernel.pending.get(message.parent_header?.msg_id);
   if (!request) return;
+  if (request.kind === 'inspect') {
+    if (message.header?.msg_type === 'inspect_reply') {
+      clearTimeout(request.timeout); kernel.pending.delete(message.parent_header?.msg_id);
+      request.resolve(message.content?.found ? (message.content.data?.['text/plain'] || message.content.data?.['text/html'] || '') : '');
+    }
+    return;
+  }
   const output = jupyterOutput(message);
   if (output) { request.outputs.push(output); request.onOutput?.(request.outputs); }
   if (message.header?.msg_type === 'execute_reply') {
@@ -236,6 +243,17 @@ async function executeInDssKernel(notebook, source, onOutput) {
     }, 90000);
     kernel.pending.set(message.header.msg_id, { outputs: [], executionCount: null, resolve, reject, timeout, onOutput });
     setKernelStatus('Running…', 'busy');
+    kernel.socket.send(JSON.stringify({ ...message, channel: 'shell' }));
+  });
+}
+async function inspectInDssKernel(notebook, code, cursorPos) {
+  // Keep hover passive: only inspect an already-running notebook kernel.
+  const kernel = dss.kernel;
+  if (!kernel || kernel.notebookId !== notebook.id || kernel.socket.readyState !== WebSocket.OPEN) return '';
+  const message = jupyterMessage('inspect_request', { code, cursor_pos: cursorPos, detail_level: 0 }, kernel.sessionId);
+  return new Promise(resolve => {
+    const timeout = setTimeout(() => { kernel.pending.delete(message.header.msg_id); resolve(''); }, 2500);
+    kernel.pending.set(message.header.msg_id, { kind: 'inspect', resolve, timeout });
     kernel.socket.send(JSON.stringify({ ...message, channel: 'shell' }));
   });
 }
@@ -493,7 +511,7 @@ function outputMarkup(kind, cellId = '') {
     });
     flushStream();
     const content = rendered.join('');
-    return content || '<div class="query-output success">Cell completed with no display output</div>';
+    return content;
   }
   if (kind === 'query') return `<div class="query-output success">Query completed · 5 rows returned</div>`;
   if (kind === 'table') return `<div class="output-header"><strong>customers</strong><span>6 rows × 5 columns</span><div class="output-controls"><button>⌕ Search</button><button>⇅ Sort</button><button>▤ Explore</button></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th></th>${TABLE.columns.map(([name, type]) => `<th>${name}<span>${type}</span></th>`).join('')}</tr></thead><tbody>${TABLE.rows.map((row, index) => `<tr><td class="row-num">${index + 1}</td>${row.map(value => `<td>${value}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
@@ -553,14 +571,15 @@ function renderCells() {
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output, data.id);
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
-    const meta = node.querySelector('.execution-meta-top'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
+    const hasError = data.meta === 'Execution failed' || data.output?.outputs?.some(output => output.output_type === 'error');
+    const meta = node.querySelector('.execution-meta-top'); meta.textContent = data.meta ? `${hasError ? '✕' : '✓'} ${data.meta}` : ''; if (data.meta) meta.classList.add(hasError ? 'error' : 'success');
     node.querySelector('.cell-footer').hidden = true;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     if (data.running) { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
     cellsEl.appendChild(node);
     editorApi.mount({
       id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS, symbols: () => symbolsBefore(data.id), connections: projectContext.connections,
-      onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id),
+      onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id), onInspect: ({ code, pos }) => inspectInDssKernel(activeNotebook(), code, pos),
     });
     editorApi.setDiagnostic(data.id, data.diagnostic);
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
