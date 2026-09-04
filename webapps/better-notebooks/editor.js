@@ -87,7 +87,7 @@ function hoverFor(datasets, symbols = [], connections = []) {
         return { dom };
       },
     };
-  });
+  }, { hoverTime: 150 });
 }
 
 function languageFor(type) {
@@ -103,10 +103,11 @@ export function mount({ id, parent, source, type, datasets, symbols = [], connec
       doc: source,
       extensions: [
         history(), language, notebookLightTheme, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(),
-        autocompletion({ override: [completionSource(type, datasets, symbols, connections)], activateOnTyping: true }), hoverFor(datasets, symbols, connections),
+        autocompletion({ override: [completionSource(type, datasets, symbols, connections)], activateOnTyping: true, activateOnTypingDelay: 120 }), hoverFor(datasets, symbols, connections),
         linter(() => []),
         keymap.of([
           { key: 'Ctrl-Space', run: startCompletion },
+          { key: 'Alt-/', run: startCompletion },
           { key: 'Tab', run: acceptCompletion },
           { key: 'Shift-Enter', run: () => { onRunAndAdvance(); return true; } },
           { key: 'Mod-Enter', run: () => { onRun(); return true; } },

@@ -405,7 +405,7 @@ async function loadProjectContext() {
 }
 function cellIndex(id) { return state.cells.findIndex(cell => cell.id === id); }
 function getCell(id) { return state.cells.find(cell => cell.id === id); }
-function newCell(type = 'python') { return { id: crypto.randomUUID(), type, source: type === 'markdown' ? '## New section' : type === 'sql' ? 'SELECT *\nFROM customers_enriched\nLIMIT 100' : '# Start writing Python', meta: '' }; }
+function newCell(type = 'python') { return { id: crypto.randomUUID(), type, source: type === 'markdown' ? '## New section' : type === 'sql' ? 'SELECT *\nFROM customers_enriched\nLIMIT 100' : '', meta: '' }; }
 
 function symbolsBefore(cellId) {
   const symbols = new Map();
@@ -848,7 +848,10 @@ function sortDataframe(table, column) {
 }
 async function createDatasetFromDataframe(cellId) {
   if (!dss.enabled || !projectContext.isDss) { setSavedState('Create datasets is available inside DSS', true); return; }
-  if (!projectContext.sqlConnection) { setSavedState('Select a project connection before creating a dataset', true); return; }
+  if (!projectContext.sqlConnection) {
+    const message = 'No managed connection is available in this project. Add or authorize a SQL/filesystem connection in DSS, then refresh project datasets.';
+    setSavedState(message, true); window.alert(message); return;
+  }
   const cell = getCell(cellId);
   const inferred = cell?.source.match(/([A-Za-z_]\w*)\.(?:head|tail|sample|describe)\s*\(/)?.[1]
     || cell?.source.match(/^\s*([A-Za-z_]\w*)\s*=/m)?.[1] || 'df';

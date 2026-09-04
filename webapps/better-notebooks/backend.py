@@ -64,6 +64,14 @@ def get_project_context():
     project = current_project()
     summary = project.get_summary()
     datasets = []
+    connections = []
+    connection_names = set()
+
+    def add_connection(name, connection_type="SQL"):
+        if name and name not in connection_names:
+            connection_names.add(name)
+            connections.append({"name": name, "type": connection_type or "SQL"})
+
     for dataset in project.list_datasets():
         name = dataset.get("name", "")
         if not name:
@@ -83,15 +91,18 @@ def get_project_context():
                 for column in columns if column.get("name")
             ],
         })
-    connections = []
+        # A user can be allowed to use a dataset's connection while lacking
+        # permission to list every instance connection. Infer those useful
+        # connections directly from project dataset settings as well.
+        try:
+            raw_settings = project.get_dataset(name).get_settings().get_raw()
+            add_connection(raw_settings.get("params", {}).get("connection"), dataset.get("type"))
+        except Exception:
+            pass
     try:
         for connection in dataiku.api_client().list_connections():
             name = connection.get("name") or connection.get("connectionName")
-            if name:
-                connections.append({
-                    "name": name,
-                    "type": connection.get("type") or connection.get("connectionType") or "SQL",
-                })
+            add_connection(name, connection.get("type") or connection.get("connectionType") or "SQL")
     except Exception:
         # Connection discovery can be restricted independently from dataset access.
         pass
