@@ -14,6 +14,17 @@ const projectContext = { name: 'Current project', key: '', isDss: false };
 const dss = { enabled: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
 let dssSaveTimer;
 const diagnosticsTimers = new Map();
+function loadEditorBundle() {
+  if (window.BetterNotebookEditor) return Promise.resolve(window.BetterNotebookEditor);
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = new URL('vendor/codemirror.js', document.baseURI).href;
+    script.onload = () => window.BetterNotebookEditor ? resolve(window.BetterNotebookEditor) : reject(new Error('CodeMirror bundle did not expose its editor API.'));
+    script.onerror = () => reject(new Error('CodeMirror bundle could not be loaded.'));
+    document.head.appendChild(script);
+  });
+}
+const editorBundleReady = loadEditorBundle();
 
 const TABLE = {
   columns: [['customer_id', 'string'], ['country', 'string'], ['orders', 'int'], ['lifetime_value', 'decimal'], ['last_order', 'date']],
@@ -251,7 +262,7 @@ function queuePythonCheck(cell) {
       const result = await dssRequest('python-check', { method: 'POST', body: JSON.stringify({ source: cell.source }) });
       cell.diagnostic = result.valid ? null : result;
     } catch (error) { cell.diagnostic = { message: 'Syntax check unavailable' }; }
-    BetterNotebookEditor?.setDiagnostic(cell.id, cell.diagnostic);
+    window.BetterNotebookEditor?.setDiagnostic(cell.id, cell.diagnostic);
     const diagnostic = document.querySelector(`[data-id="${cell.id}"] .cell-diagnostic`);
     if (diagnostic) { diagnostic.hidden = !cell.diagnostic; diagnostic.textContent = cell.diagnostic ? `Line ${cell.diagnostic.line || '?'}: ${cell.diagnostic.message}` : ''; }
   }, 500));
@@ -389,7 +400,8 @@ function markdownMarkup(source) {
 function autoHeight(textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`; }
 function renderCells() {
   const scrollY = window.scrollY;
-  BetterNotebookEditor?.destroyAll();
+  const editorApi = window.BetterNotebookEditor;
+  editorApi?.destroyAll();
   cellsEl.innerHTML = '';
   state.cells.forEach((data, index) => {
     const node = template.content.firstElementChild.cloneNode(true);
@@ -405,11 +417,16 @@ function renderCells() {
     node.querySelector('.cell-footer').hidden = !data.meta;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     cellsEl.appendChild(node);
-    BetterNotebookEditor.mount({
-      id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS,
-      onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id),
-    });
-    BetterNotebookEditor.setDiagnostic(data.id, data.diagnostic);
+    if (editorApi) {
+      editorApi.mount({
+        id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS,
+        onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id),
+      });
+      editorApi.setDiagnostic(data.id, data.diagnostic);
+    } else {
+      const textarea = document.createElement('textarea'); textarea.className = 'code-input'; textarea.spellcheck = false; textarea.value = data.source;
+      textarea.placeholder = data.type === 'markdown' ? 'Write Markdown' : data.type === 'sql' ? 'Write SQL' : 'Write Python'; editorHost.replaceWith(textarea); autoHeight(textarea);
+    }
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
   });
   renderToolbar(); renderOutline();
@@ -532,7 +549,7 @@ async function deleteActiveNotebook() {
 function addFolder() { const modal = document.querySelector('#folder-modal'); modal.classList.remove('hidden'); requestAnimationFrame(() => document.querySelector('#folder-name-input').focus()); }
 function updateCell(id, patch) { const cell = getCell(id); Object.assign(cell, patch); save(); queuePythonCheck(cell); renderOutline(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
-function focusCell(id, preventScroll = false) { requestAnimationFrame(() => BetterNotebookEditor?.focus(id, preventScroll)); }
+function focusCell(id, preventScroll = false) { requestAnimationFrame(() => { if (window.BetterNotebookEditor) window.BetterNotebookEditor.focus(id, preventScroll); else document.querySelector(`[data-id="${id}"] .code-input`)?.focus({ preventScroll }); }); }
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
 async function runCell(id) {
   const cell = getCell(id); if (!cell) return;
@@ -578,10 +595,10 @@ cellsEl.addEventListener('click', event => {
   if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
   const typeOption = event.target.closest('[data-cell-type]');
   if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); queuePythonCheck(target); renderCells(); }
-  if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.querySelector('.code-editor').classList.add('editing'); focusCell(id); }
+  if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); const editor = cell.querySelector('.code-editor'); if (editor) editor.classList.add('editing'); else cell.querySelector('.code-input')?.classList.add('editing'); focusCell(id); }
 });
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
-cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
+cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } if (event.target.matches('.code-input.editing')) { event.target.classList.remove('editing'); event.target.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
 cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter, newCell(button.dataset.insertType)); });
 cellsEl.addEventListener('dragstart', event => { const cell = event.target.closest('.cell'); if (!cell || event.target.closest('.code-editor')) { event.preventDefault(); return; } state.dragId = cell.dataset.id; cell.classList.add('dragging'); });
 cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell && cell.dataset.id !== state.dragId) cell.classList.add('drop-target'); });
@@ -674,3 +691,4 @@ document.addEventListener('keydown', async event => {
 state.activeNotebookId = state.notebooks.activeNotebookId || state.notebooks.notebooks[0].id;
 state.cells = activeNotebook().cells;
 resetHistory(); save(false); renderWorkspace(); loadProjectContext(); loadDssWorkspace();
+editorBundleReady.then(() => renderCells()).catch(error => { console.warn(error); setSavedState('Code editor unavailable; using the standard cell editor', true); });
