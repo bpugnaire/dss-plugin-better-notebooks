@@ -185,7 +185,7 @@ function handleJupyterMessage(event) {
   const request = kernel.pending.get(message.parent_header?.msg_id);
   if (!request) return;
   const output = jupyterOutput(message);
-  if (output) request.outputs.push(output);
+  if (output) { request.outputs.push(output); request.onOutput?.(request.outputs); }
   if (message.header?.msg_type === 'execute_reply') {
     request.executionCount = message.content?.execution_count;
     // DSS/Jupyter normally follows with an IOPub idle message. Guard against
@@ -224,7 +224,7 @@ async function connectDssKernel(notebook) {
   setKernelStatus('Connected', 'connected');
   return kernel;
 }
-async function executeInDssKernel(notebook, source) {
+async function executeInDssKernel(notebook, source, onOutput) {
   const kernel = await connectDssKernel(notebook);
   const message = jupyterMessage('execute_request', {
     code: source, silent: false, store_history: true, user_expressions: {}, allow_stdin: false, stop_on_error: true,
@@ -234,10 +234,15 @@ async function executeInDssKernel(notebook, source) {
       kernel.pending.delete(message.header.msg_id);
       reject(new Error('Cell execution timed out after 90 seconds.'));
     }, 90000);
-    kernel.pending.set(message.header.msg_id, { outputs: [], executionCount: null, resolve, reject, timeout });
+    kernel.pending.set(message.header.msg_id, { outputs: [], executionCount: null, resolve, reject, timeout, onOutput });
     setKernelStatus('Running…', 'busy');
     kernel.socket.send(JSON.stringify({ ...message, channel: 'shell' }));
   });
+}
+async function interruptDssExecution() {
+  if (!dss.kernel?.kernelId) return;
+  setKernelStatus('Interrupting…', 'busy');
+  await jupyterRequest(`api/kernels/${encodeURIComponent(dss.kernel.kernelId)}/interrupt`, { method: 'POST', body: '{}' });
 }
 function setSavedState(message, isError = false) {
   const status = document.querySelector('#saved-state');
@@ -424,6 +429,16 @@ function outputMarkup(kind) {
   if (kind === 'table') return `<div class="output-header"><strong>customers</strong><span>6 rows × 5 columns</span><div class="output-controls"><button>⌕ Search</button><button>⇅ Sort</button><button>▤ Explore</button></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th></th>${TABLE.columns.map(([name, type]) => `<th>${name}<span>${type}</span></th>`).join('')}</tr></thead><tbody>${TABLE.rows.map((row, index) => `<tr><td class="row-num">${index + 1}</td>${row.map(value => `<td>${value}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   return '';
 }
+function updateRenderedCellOutput(cell) {
+  const node = document.querySelector(`[data-id="${cell.id}"]`); if (!node) return;
+  node.querySelector('.cell-output').innerHTML = cell.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(cell.source)}</div>` : outputMarkup(cell.output);
+}
+function updateRenderedRunState(cell) {
+  const node = document.querySelector(`[data-id="${cell.id}"]`); if (!node) return;
+  node.classList.toggle('running', Boolean(cell.running));
+  const button = node.querySelector('.run-cell'); button.classList.toggle('is-running', Boolean(cell.running));
+  button.title = cell.running ? 'Interrupt execution' : 'Run cell'; button.setAttribute('aria-label', button.title);
+}
 function dataframeMarkup(html) {
   if (!html) return '';
   const document = new DOMParser().parseFromString(outputText(html), 'text/html');
@@ -461,6 +476,7 @@ function renderCells() {
     node.dataset.id = data.id; node.dataset.type = data.type; node.draggable = true;
     if (state.selected.has(data.id)) node.classList.add('selected');
     if (state.activeCellId === data.id) node.classList.add('active');
+    if (data.running) node.classList.add('running');
     if (collapsedAtLevel) node.classList.add('section-hidden');
     const language = node.querySelector('.cell-language'); language.classList.add(data.type);
     const editorHost = node.querySelector('.code-editor');
@@ -470,6 +486,7 @@ function renderCells() {
     const meta = node.querySelector('.execution-meta'); meta.textContent = data.meta || ''; if (data.meta) meta.classList.add('success');
     node.querySelector('.cell-footer').hidden = !data.meta;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
+    if (data.running) { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
     cellsEl.appendChild(node);
     editorApi.mount({
       id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS,
@@ -607,16 +624,18 @@ async function runCell(id) {
   state.activeCellId = id;
   if (cell.type === 'markdown') { cell.meta = 'Rendered just now'; save(); renderCells(); return true; }
   if (!activeNotebook().remote) { cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : 'table'; save(); renderCells(); return true; }
-  const started = performance.now(); cell.meta = 'Running…'; renderCells();
+  const started = performance.now(); cell.meta = 'Running…'; cell.running = true; renderCells();
   try {
     const source = cell.type === 'sql' ? `%sql\n${cell.source}` : cell.source;
-    const result = await executeInDssKernel(activeNotebook(), source);
+    const result = await executeInDssKernel(activeNotebook(), source, outputs => {
+      cell.output = { outputs: [...outputs] }; updateRenderedCellOutput(cell);
+    });
     cell.output = { outputs: result.outputs };
     cell.dssCell = { ...(cell.dssCell || {}), outputs: result.outputs, execution_count: result.executionCount };
     cell.meta = `Ran just now · ${((performance.now() - started) / 1000).toFixed(2)}s`;
-    save(); renderCells(); setSavedState('Executed in DSS'); return true;
+    cell.running = false; save(); renderCells(); setSavedState('Executed in DSS'); return true;
   } catch (error) {
-    cell.meta = 'Execution failed'; cell.output = { outputs: [{ output_type: 'error', ename: 'DSS execution error', evalue: error.message, traceback: [] }] };
+    cell.running = false; cell.meta = 'Execution failed'; cell.output = { outputs: [{ output_type: 'error', ename: 'DSS execution error', evalue: error.message, traceback: [] }] };
     renderCells(); setSavedState(`Execution failed: ${error.message}`, true); console.warn(error); return false;
   }
 }
@@ -641,7 +660,11 @@ cellsEl.addEventListener('change', event => { if (event.target.matches('.cell-ch
 cellsEl.addEventListener('click', event => {
   const cell = event.target.closest('.cell'); if (!cell) return; const id = cell.dataset.id;
   setActiveCell(id);
-  if (event.target.closest('.run-cell')) runCell(id);
+  if (event.target.closest('.run-cell')) {
+    const current = getCell(id);
+    if (current.running) interruptDssExecution().catch(error => setSavedState(`Interrupt failed: ${error.message}`, true));
+    else runCell(id);
+  }
   if (event.target.closest('.delete-cell')) { state.selected = new Set([id]); deleteSelected(); }
   if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
   const typeOption = event.target.closest('[data-cell-type]');
@@ -790,12 +813,12 @@ settingsModal.addEventListener('click', event => { if (event.target === settings
 document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape') { closeSettings(); closeFolderModal(); closeDataframeModal(); return; }
-  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
+  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { if (event.target.closest?.('.cm-editor')) return; event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
   // A focused CodeMirror editor owns its own undo stack. Let it handle Cmd/Ctrl+Z
   // so the edit is undone in place and the cursor never leaves the cell.
   if (mod && event.key.toLowerCase() === 'z' && event.target.closest?.('.cm-editor')) return;
   if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); if (state.activeCellId) focusCell(state.activeCellId, true); return; }
-  if (mod && event.key === 'Enter') { event.preventDefault(); (state.selected.size ? [...state.selected] : [document.activeElement.closest?.('.cell')?.dataset.id]).filter(Boolean).forEach(runCell); }
+  if (mod && event.key === 'Enter') { if (event.target.closest?.('.cm-editor')) return; event.preventDefault(); (state.selected.size ? [...state.selected] : [document.activeElement.closest?.('.cell')?.dataset.id]).filter(Boolean).forEach(runCell); }
   if (mod && event.key.toLowerCase() === 'c' && state.selected.size) { event.preventDefault(); copySelected(); }
   if (mod && event.key.toLowerCase() === 'x' && state.selected.size) { event.preventDefault(); copySelected(true); }
   if (mod && event.key.toLowerCase() === 'v' && state.clipboard.length && !document.activeElement.matches('.code-input')) { event.preventDefault(); pasteCells(); }
