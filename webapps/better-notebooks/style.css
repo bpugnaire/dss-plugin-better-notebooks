@@ -150,3 +150,21 @@ button { cursor: pointer; }
   .panel-resizer { display:none; }
   .notebook-head,.notice,.batch-toolbar,.notebook-find,.cells { width:calc(100% - 30px); }
 }
+
+/* Align the actual notebook cards with the notebook heading. The selection
+   controls remain available, but live in the card header rather than claiming
+   a separate left gutter. */
+.cell { grid-template-columns:minmax(0,1fr); position:relative; }
+.cell-rail { position:absolute; z-index:2; top:7px; left:9px; height:15px; padding:0; flex-direction:row; align-items:center; gap:8px; }
+.cell-header { padding-left:58px; }
+.cell-insert-gap { margin-left:0; }
+.drag-handle { font-size:15px; }
+.cell-check { width:14px; height:14px; }
+
+/* A clear bookmark tab for the dataset panel, deliberately kept clear of
+   the independent resize divider. */
+.data-panel-toggle { z-index:8; top:88px; right:calc(var(--right-panel-width) + 8px); width:42px; height:84px; border:1px solid var(--line); border-right:0; border-radius:9px 0 0 9px; background:#fff; color:#2a6251; box-shadow:-5px 6px 18px rgba(20,48,46,.12); font-size:0; clip-path:polygon(0 0,100% 0,100% 100%,64% 100%,50% 87%,36% 100%,0 100%); }
+.data-panel-toggle::before { content:'‹'; display:grid; place-items:center; width:100%; height:48px; font-size:26px; font-weight:500; line-height:1; }
+.data-panel-toggle[aria-pressed="true"] { right:0; border-right:1px solid var(--line); border-radius:9px 0 0 9px; }
+.data-panel-toggle[aria-pressed="true"]::before { content:'›'; }
+.data-panel-toggle:hover { color:#14302e; background:#e4f9f0; }
