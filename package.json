@@ -16,6 +16,10 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.39.9",
     "@codemirror/theme-one-dark": "^6.1.2",
-    "esbuild": "^0.27.0"
+    "esbuild": "^0.27.0",
+    "plotly.js-dist-min": "^4.0.0",
+    "vega": "^6.4.0",
+    "vega-embed": "^7.2.0",
+    "vega-lite": "^6.4.3"
   }
 }
