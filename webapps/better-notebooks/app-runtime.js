@@ -698,7 +698,8 @@ function renderNotebookNavigation() {
   document.querySelector('#notebook-tabs').innerHTML = openNotebooks.map(item => `<div class="notebook-tab ${item.id === state.activeNotebookId ? 'active' : ''}" data-notebook-id="${item.id}"><button class="tab-select" aria-label="Open ${escapeHTML(item.name)}"><span class="notebook-file-icon">▣</span><span>${escapeHTML(item.name)}</span></button><button class="close-tab" aria-label="Close ${escapeHTML(item.name)}">×</button></div>`).join('');
   document.querySelector('#notebook-title').textContent = notebook.name;
   document.querySelector('#crumb-notebook-name').textContent = notebook.name;
-  document.querySelector('.notebook-head .eyebrow').firstChild.textContent = `${notebook.language} NOTEBOOK `;
+  const runtimeLabel = document.querySelector('.notebook-runbar .eyebrow');
+  if (runtimeLabel?.firstChild) runtimeLabel.firstChild.textContent = `${notebook.language} NOTEBOOK `;
   dss.activeRuntimeId = notebook.runtimeId || dss.activeRuntimeId;
   renderRuntimeSelector();
 }
