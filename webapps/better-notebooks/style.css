@@ -4,12 +4,12 @@
   --line: #e8e5eb;
   --canvas: #fbfafc;
   --panel: #ffffff;
-  --sidebar: #242129;
-  --accent: #6b4ce6;
-  --accent-soft: #f0edff;
+  --sidebar: #14302e;
+  --accent: #73e6b4;
+  --accent-soft: #e4f9f0;
   --orange: #fb6d3a;
   --code: #26242b;
-  --green: #107a55;
+  --green: #187e5c;
   --shadow: 0 10px 35px rgba(33, 27, 47, .06);
 }
 * { box-sizing: border-box; }
@@ -127,3 +127,6 @@ button { cursor: pointer; }
 
 /* Centered cell insertion divider: controls appear in place, without motion. */
 .cell-insert-gap { height:32px; margin-left:34px; display:grid; place-items:center; }.cell-insert-gap::before { top:50%; transform:translateY(-50%); }.cell-insert-gap:hover::before { background:#c7bedf; }.cell-insert-gap .insert-trigger { display:none; }.insert-menu { opacity:0; transform:none; pointer-events:none; position:relative; left:auto; top:auto; display:flex; gap:7px; padding:3px 6px; border-color:transparent; border-radius:0; background:var(--canvas); box-shadow:none; transition:none; }.cell-insert-gap:hover .insert-menu { opacity:1; transform:none; pointer-events:auto; }.cell-insert-gap:hover .insert-trigger { display:none; }.insert-menu button { opacity:1; transform:none; position:static; width:auto; height:25px; border:1px solid #d1c9dc; border-radius:4px; background:#fff; box-shadow:0 1px 3px rgba(38,31,49,.08); white-space:nowrap; padding:0 9px; color:#655d6b; font-size:10px; font-weight:700; }.insert-menu button:hover { background:#f0edff; color:#6045c9; border-color:#a996ec; }.insert-menu button span { margin:0; }
+
+/* Dataiku green palette: a deep workspace surface with a fresh, readable accent. */
+.sidebar-rail { background:#0e2422; border-right-color:#28504b; }.rail-button:hover,.rail-button.active { background:#20423e; color:#73e6b4; }.rail-collapse:hover { background:#20423e; }.new-button,.button.primary { background:#73e6b4; border-color:#73e6b4; color:#14302e; }.new-button:hover,.button.primary:hover { background:#8aedc2; border-color:#8aedc2; }.brand-mark,.notebook-file-icon,.open-file-indicator { color:#73e6b4; }.open-file-indicator { background:#73e6b4; }.sidebar .outline-item:hover,.project-notebook:hover { background:#20423e; }.project-notebook.active,.project-notebook-row.active { background:#28504b; }.folder-label.drop-target { background:#28504b; box-shadow:inset 0 0 0 1px #73e6b4; }.tree-rename { border-color:#73e6b4; background:#1b3936; }.cell.selected .cell-content { border-color:#4ebd91; box-shadow:0 0 0 2px rgba(115,230,180,.18); }.cell.drop-target .cell-content { box-shadow:0 -3px 0 #73e6b4; }.cell.running .cell-content { border-color:#73c9a7; box-shadow:0 0 0 2px rgba(115,230,180,.13); }.cell.running .cell-content { box-shadow:inset 2px 0 0 #73e6b4; }.cell.running .execution-meta,.cell.running .execution-meta-top { color:#177e5b; }.cell-type .run-cell.is-running { color:#177e5b; }.cell-type .run-cell.is-running::after { border-color:#177e5b; border-right-color:transparent; }.cell-type .run-cell:hover,.cell-actions .ai-help:hover,.rename-notebook:hover { color:#177e5b; }.code-editor .cm-content { caret-color:#177e5b; }.code-editor .cm-selectionBackground, .code-editor ::selection { background:#c6f4df !important; }.code-editor .cm-activeLine,.code-editor .cm-activeLineGutter { background:#f0fcf6; }.code-editor .cm-tooltip-autocomplete > ul > li[aria-selected] { background:#177e5b; }.code-editor .cm-project-hover strong { color:#14302e; }.data-panel .dataset.active { background:#e4f9f0; border-color:#b8ecd6; color:#176447; }.dataset-inspector-actions button:hover,.insert-menu button:hover { border-color:#73e6b4; background:#eafaf2; color:#176447; }.notebook-tab.active { border-top-color:#73e6b4; }.cell-insert-gap:hover::before { background:#8eddbd; }.status-pill[data-state="connected"] { color:#176447; background:#e4f9f0; }
