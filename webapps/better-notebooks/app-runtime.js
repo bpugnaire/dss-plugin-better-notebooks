@@ -73,6 +73,10 @@ function loadNotebooks() {
   };
 }
 function activeNotebook() { return state.notebooks.notebooks.find(notebook => notebook.id === state.activeNotebookId); }
+function savedNotebookLayout() {
+  try { return JSON.parse(localStorage.getItem(storageKey('notebooks'))) || {}; }
+  catch { return {}; }
+}
 function resetHistory() { state.history = [JSON.stringify(state.cells)]; state.historyIndex = 0; }
 async function switchNotebook(id) {
   const notebook = state.notebooks.notebooks.find(item => item.id === id); if (!notebook || id === state.activeNotebookId) return;
@@ -83,7 +87,14 @@ async function switchNotebook(id) {
   }
   notebook.open = true; state.activeNotebookId = id; state.notebooks.activeNotebookId = id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = null; dss.activeRuntimeId = notebook.runtimeId || 'dss_builtin'; resetHistory(); if (!notebook.remote) persistNotebooks(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'instant' });
 }
-function persistNotebooks() { localStorage.setItem(storageKey('notebooks'), JSON.stringify(state.notebooks)); }
+function persistNotebooks() {
+  // Native cells are authoritative in DSS. Persist only their local display
+  // metadata so reloads retain folders without risking stale notebook content.
+  const notebooks = state.notebooks.notebooks.map(notebook => notebook.remote
+    ? { id: notebook.id, name: notebook.name, open: notebook.open, updatedAt: notebook.updatedAt, folderId: notebook.folderId, remote: true, runtimeId: notebook.runtimeId }
+    : notebook);
+  localStorage.setItem(storageKey('notebooks'), JSON.stringify({ ...state.notebooks, notebooks }));
+}
 function save(recordHistory = true) {
   const notebook = activeNotebook();
   notebook.cells = state.cells; notebook.updatedAt = Date.now(); state.notebooks.activeNotebookId = state.activeNotebookId;
@@ -375,9 +386,11 @@ async function loadDssWorkspace() {
     ]);
     dss.enabled = true;
     dss.runtimes = runtimePayload.runtimes || [];
+    const savedLayout = savedNotebookLayout();
+    const folderByNotebookId = new Map((savedLayout.notebooks || []).map(item => [item.id, item.folderId ?? null]));
     const notebooks = (notebookPayload.notebooks || []).map((item, index) => ({
       id: item.name, name: item.name, language: 'PYTHON', cells: [], open: index === 0,
-      updatedAt: 0, folderId: null, remote: true, loaded: false, runtimeId: runtimeIdFor(item.kernelSpec),
+      updatedAt: 0, folderId: folderByNotebookId.get(item.name) ?? null, remote: true, loaded: false, runtimeId: runtimeIdFor(item.kernelSpec),
     }));
     if (!notebooks.length) {
       dss.loading = false; dss.workspaceLoaded = true;
@@ -385,12 +398,12 @@ async function loadDssWorkspace() {
       renderRuntimeSelector();
       return;
     }
-    state.notebooks = { activeNotebookId: notebooks[0].id, folders: [], notebooks };
+    state.notebooks = { activeNotebookId: notebooks[0].id, folders: savedLayout.folders ?? [], notebooks };
     state.activeNotebookId = notebooks[0].id;
     await loadDssNotebook(notebooks[0]);
     state.cells = notebooks[0].cells;
     dss.activeRuntimeId = notebooks[0].runtimeId;
-    dss.loading = false; dss.workspaceLoaded = true; resetHistory(); renderRuntimeSelector(); renderWorkspace();
+    dss.loading = false; dss.workspaceLoaded = true; resetHistory(); persistNotebooks(); renderRuntimeSelector(); renderWorkspace();
     setSavedState('Loaded from DSS');
   } catch (error) {
     dss.loading = false; dss.enabled = false; dss.workspaceLoaded = false;
@@ -649,7 +662,13 @@ function renderCells() {
   });
   renderToolbar(); renderOutline();
   hydrateRichMime(cellsEl).catch(error => console.warn('Could not hydrate rich outputs.', error));
-  requestAnimationFrame(() => restoreScrollPositions(scrollPositions));
+  // Removing the focused CodeMirror node can cause browsers to compensate by
+  // scrolling after the first frame. Restore again after layout settles.
+  requestAnimationFrame(() => {
+    restoreScrollPositions(scrollPositions);
+    requestAnimationFrame(() => restoreScrollPositions(scrollPositions));
+    window.setTimeout(() => restoreScrollPositions(scrollPositions), 0);
+  });
 }
 function renderToolbar() {
   const toolbar = document.querySelector('#batch-toolbar'); const count = state.selected.size;
@@ -918,6 +937,40 @@ document.querySelector('#data-panel-toggle').addEventListener('click', event => 
   event.currentTarget.title = collapsed ? 'Show project datasets' : 'Hide project datasets';
   event.currentTarget.textContent = collapsed ? '▰' : '▱';
 });
+function initialisePanelResizers() {
+  const shell = document.querySelector('.app-shell');
+  const saved = (() => { try { return JSON.parse(localStorage.getItem(storageKey('panel-widths'))) || {}; } catch { return {}; } })();
+  const apply = (side, width) => {
+    const clamped = Math.round(Math.max(side === 'left' ? 180 : 220, Math.min(side === 'left' ? 420 : 440, width)));
+    shell.style.setProperty(side === 'left' ? '--left-panel-width' : '--right-panel-width', `${clamped}px`);
+    saved[side] = clamped;
+    localStorage.setItem(storageKey('panel-widths'), JSON.stringify(saved));
+  };
+  if (Number.isFinite(saved.left)) apply('left', saved.left);
+  if (Number.isFinite(saved.right)) apply('right', saved.right);
+  document.querySelectorAll('[data-panel-resizer]').forEach(handle => {
+    handle.addEventListener('pointerdown', event => {
+      if (window.matchMedia('(max-width: 1050px)').matches) return;
+      const side = handle.dataset.panelResizer;
+      const startX = event.clientX;
+      const startWidth = parseFloat(getComputedStyle(shell).getPropertyValue(side === 'left' ? '--left-panel-width' : '--right-panel-width'));
+      handle.setPointerCapture(event.pointerId);
+      document.body.classList.add('resizing-panels');
+      const move = pointer => apply(side, startWidth + (side === 'left' ? pointer.clientX - startX : startX - pointer.clientX));
+      const stop = pointer => {
+        handle.releasePointerCapture?.(pointer.pointerId);
+        document.body.classList.remove('resizing-panels');
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', stop);
+        handle.removeEventListener('pointercancel', stop);
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', stop);
+      handle.addEventListener('pointercancel', stop);
+    });
+  });
+}
+initialisePanelResizers();
 const folderModal = document.querySelector('#folder-modal');
 const closeFolderModal = () => { folderModal.classList.add('hidden'); document.querySelector('#folder-form').reset(); };
 document.querySelector('#close-folder-modal').addEventListener('click', closeFolderModal);

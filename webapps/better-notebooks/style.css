@@ -130,3 +130,23 @@ button { cursor: pointer; }
 
 /* Dataiku green palette: a deep workspace surface with a fresh, readable accent. */
 .sidebar-rail { background:#0e2422; border-right-color:#28504b; }.rail-button:hover,.rail-button.active { background:#20423e; color:#73e6b4; }.rail-collapse:hover { background:#20423e; }.new-button,.button.primary { background:#73e6b4; border-color:#73e6b4; color:#14302e; }.new-button:hover,.button.primary:hover { background:#8aedc2; border-color:#8aedc2; }.brand-mark,.notebook-file-icon,.open-file-indicator { color:#73e6b4; }.open-file-indicator { background:#73e6b4; }.sidebar .outline-item:hover,.project-notebook:hover { background:#20423e; }.project-notebook.active,.project-notebook-row.active { background:#28504b; }.folder-label.drop-target { background:#28504b; box-shadow:inset 0 0 0 1px #73e6b4; }.tree-rename { border-color:#73e6b4; background:#1b3936; }.cell.selected .cell-content { border-color:#4ebd91; box-shadow:0 0 0 2px rgba(115,230,180,.18); }.cell.drop-target .cell-content { box-shadow:0 -3px 0 #73e6b4; }.cell.running .cell-content { border-color:#73c9a7; box-shadow:0 0 0 2px rgba(115,230,180,.13); }.cell.running .cell-content { box-shadow:inset 2px 0 0 #73e6b4; }.cell.running .execution-meta,.cell.running .execution-meta-top { color:#177e5b; }.cell-type .run-cell.is-running { color:#177e5b; }.cell-type .run-cell.is-running::after { border-color:#177e5b; border-right-color:transparent; }.cell-type .run-cell:hover,.cell-actions .ai-help:hover,.rename-notebook:hover { color:#177e5b; }.code-editor .cm-content { caret-color:#177e5b; }.code-editor .cm-selectionBackground, .code-editor ::selection { background:#c6f4df !important; }.code-editor .cm-activeLine,.code-editor .cm-activeLineGutter { background:#f0fcf6; }.code-editor .cm-tooltip-autocomplete > ul > li[aria-selected] { background:#177e5b; }.code-editor .cm-project-hover strong { color:#14302e; }.data-panel .dataset.active { background:#e4f9f0; border-color:#b8ecd6; color:#176447; }.dataset-inspector-actions button:hover,.insert-menu button:hover { border-color:#73e6b4; background:#eafaf2; color:#176447; }.notebook-tab.active { border-top-color:#73e6b4; }.cell-insert-gap:hover::before { background:#8eddbd; }.status-pill[data-state="connected"] { color:#176447; background:#e4f9f0; }
+
+/* A stable, readable notebook column with resizable project navigation. */
+.app-shell { --left-panel-width:242px; --right-panel-width:260px; grid-template-columns:var(--left-panel-width) 8px minmax(0,1fr) 8px var(--right-panel-width); }
+.panel-resizer { position:sticky; top:0; z-index:9; height:100vh; cursor:col-resize; background:transparent; touch-action:none; }
+.panel-resizer::after { content:''; position:absolute; top:0; bottom:0; left:3px; width:2px; background:transparent; transition:background .12s; }
+.panel-resizer:hover::after,.resizing-panels .panel-resizer::after { background:#73e6b4; }
+.resizing-panels,.resizing-panels * { cursor:col-resize !important; user-select:none !important; }
+.workspace { min-width:0; }
+.notebook-head,.notice,.batch-toolbar,.notebook-find,.cells { width:min(1180px, calc(100% - 64px)); max-width:none; margin-left:auto; margin-right:auto; }
+.notebook-head { padding:0; }
+.data-panel-toggle { right:calc(var(--right-panel-width) - 12px); }
+.app-shell.data-panel-collapsed { grid-template-columns:var(--left-panel-width) 8px minmax(0,1fr) 0 0; }
+.app-shell.sidebar-collapsed { grid-template-columns:43px 8px minmax(0,1fr) 8px var(--right-panel-width); }
+.app-shell.sidebar-collapsed.data-panel-collapsed { grid-template-columns:43px 8px minmax(0,1fr) 0 0; }
+.app-shell.data-panel-collapsed .panel-resizer-right { display:none; }
+@media (max-width:1050px) {
+  .app-shell,.app-shell.sidebar-collapsed,.app-shell.data-panel-collapsed,.app-shell.sidebar-collapsed.data-panel-collapsed { grid-template-columns:1fr; }
+  .panel-resizer { display:none; }
+  .notebook-head,.notice,.batch-toolbar,.notebook-find,.cells { width:calc(100% - 30px); }
+}
