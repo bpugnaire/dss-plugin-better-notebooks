@@ -41,6 +41,10 @@
           <div id="outline-list"></div>
         </div>
 
+        <div class="sidebar-project-context">
+          <div class="sidebar-project-path"><span>PROJECT</span><strong id="crumb-project-name">Customer Analytics</strong><em id="crumb-notebook-name">Explore customer behaviour</em></div>
+          <div class="sidebar-project-actions"><span class="saved-state" id="saved-state">Saved locally</span><button class="icon-button" id="settings-button" title="Notebook settings" aria-label="Notebook settings">⚙</button><button class="avatar" aria-label="Profile">BP</button></div>
+        </div>
         <div class="sidebar-footer">
           <div class="offline-dot"></div>
           <span>Local prototype</span>
@@ -50,21 +54,16 @@
       <div class="panel-resizer panel-resizer-left" data-panel-resizer="left" role="separator" aria-orientation="vertical" aria-label="Resize notebook navigation"></div>
 
       <main class="workspace">
-        <header class="topbar">
-          <div class="crumbs"><span>Projects</span><span>/</span><span>Customer Analytics</span><span>/</span><strong id="crumb-notebook-name">Explore customer behaviour</strong></div>
-          <div class="topbar-actions">
-            <span class="saved-state" id="saved-state">Saved locally</span>
-            <button class="button ghost" id="settings-button">⚙ Settings</button>
-            <button class="avatar" aria-label="Profile">BP</button>
-          </div>
-        </header>
         <nav class="notebook-tabs" id="notebook-tabs" aria-label="Open notebook tabs"></nav>
 
+        <section class="notebook-runbar" aria-label="Notebook execution controls">
+          <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill" id="kernel-status" data-state="idle">● Idle</span><button class="executor-selector" id="executor-selector">Python 3.11 <span>⌄</span></button><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
+          <div class="head-actions"><button class="button primary" id="run-all"><span>▶</span> Run all</button><button class="button ghost hidden" id="stop-run-all"><span>■</span> Stop</button></div>
+        </section>
         <section class="notebook-head">
           <div>
-            <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill">● Idle</span><button class="executor-selector" id="executor-selector">Python 3.11 <span>⌄</span></button><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
             <h1 class="notebook-title-row"><span id="notebook-title" tabindex="0" title="Double-click to rename">Explore customer behaviour</span><button class="rename-notebook" id="rename-notebook-button" title="Rename notebook" aria-label="Rename notebook">✎</button></h1>
-            <p>Prototype notebook · Local state only</p>
+            <p id="notebook-subtitle">Prototype notebook · Local state only</p>
           </div>
           <div class="head-actions">
             <button class="button primary" id="run-all"><span>▶</span> Run all</button>

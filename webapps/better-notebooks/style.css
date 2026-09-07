@@ -168,3 +168,31 @@ button { cursor: pointer; }
 .data-panel-toggle[aria-pressed="true"] { right:0; border-right:1px solid var(--line); border-radius:9px 0 0 9px; }
 .data-panel-toggle[aria-pressed="true"]::before { content:'›'; }
 .data-panel-toggle:hover { color:#14302e; background:#e4f9f0; }
+
+/* Keep navigation and execution controls in view without keeping the large
+   notebook title pinned above the work. */
+.notebook-tabs { position:sticky; top:0; z-index:7; padding-left:0; background:#f7f6f8; }
+.notebook-runbar { width:min(1180px, calc(100% - 64px)); height:50px; margin:0 auto; padding:0; position:sticky; top:29px; z-index:6; display:flex; align-items:center; justify-content:space-between; background:var(--canvas); border-bottom:1px solid #eeeaf0; }
+.notebook-runbar .eyebrow { display:flex; align-items:center; margin:0; white-space:nowrap; }
+.notebook-runbar .head-actions { margin:0; }
+.notebook-runbar .button { height:29px; padding:0 10px; font-size:10px; }
+.notebook-head { margin-top:20px; margin-bottom:18px; display:block; }
+.sidebar-project-context { margin-top:auto; padding:12px 8px 10px; border-top:1px solid #28504b; display:grid; gap:9px; color:#c8d6d2; }
+.sidebar-project-path { display:grid; gap:3px; min-width:0; }
+.sidebar-project-path span { color:#7f9891; font-size:8px; font-weight:800; letter-spacing:1px; }
+.sidebar-project-path strong,.sidebar-project-path em { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-style:normal; }
+.sidebar-project-path strong { color:#e7f1ee; font-size:10px; }
+.sidebar-project-path em { color:#92a8a2; font-size:9px; }
+.sidebar-project-actions { display:flex; align-items:center; gap:7px; }
+.sidebar-project-actions .saved-state { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#9ab1ab; font-size:9px; }
+.sidebar-project-actions .saved-state::before { color:#73e6b4; }
+.sidebar-project-actions .icon-button { color:#b7ccc6; font-size:14px; padding:2px; }
+.sidebar-project-actions .icon-button:hover { color:#73e6b4; }
+.sidebar-project-actions .avatar { flex:0 0 auto; width:23px; height:23px; margin:0; font-size:8px; background:#73e6b4; color:#14302e; }
+.sidebar-footer { margin-top:0; border-top-color:#28504b; }
+
+/* A compact, flush tab: the resize handle remains immediately to its left. */
+.data-panel-toggle { top:96px; right:var(--right-panel-width); width:29px; height:58px; border-radius:7px 0 0 7px; box-shadow:-3px 4px 12px rgba(20,48,46,.1); clip-path:none; }
+.data-panel-toggle::before { height:100%; font-size:22px; }
+.data-panel-toggle[aria-pressed="true"] { right:0; }
+@media (max-width:1050px) { .notebook-runbar { width:calc(100% - 30px); } }
