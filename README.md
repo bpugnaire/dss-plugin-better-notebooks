@@ -1,8 +1,23 @@
 # Better Notebooks
 
-Better Notebooks is a Databricks-inspired notebook workspace for Dataiku. This
-repository now contains both an installable Dataiku plugin webapp component and
-the standalone browser prototype used to iterate on the interaction design.
+Better Notebooks is a modern notebook workspace for Dataiku. It is an
+installable plugin webapp that keeps native DSS Jupyter notebooks at the
+center, while providing a faster, cleaner development experience.
+
+## What it brings
+
+- A modern multi-notebook workspace with cell-focused editing, navigation,
+  organization, keyboard shortcuts, and native DSS autosave.
+- A lightweight IDE experience: CodeMirror editing, Python/SQL highlighting,
+  syntax diagnostics, completion, and kernel-backed documentation hovers.
+- Project-aware work: browse datasets, inspect schemas and samples, insert
+  Python/SQL starter code, and see datasets linked by the current notebook.
+- Real DSS execution with selectable Python environments, SQL connections,
+  streamed output, interrupt support, and stop-on-error execution flow.
+- Rich results for DataFrames and visualizations, including interactive
+  Plotly/Vega charts and standard Jupyter image, HTML, JSON, and table output.
+- A direct handoff from a DataFrame to a managed DSS dataset, including the
+  explicit notebook write cell needed to materialize it.
 
 ## Repository layout
 
@@ -23,20 +38,15 @@ needed for the current UI workflow.
 
 ## Rebuild the packaged editor
 
-The Dataiku webapp ships CodeMirror bundled directly into the checked-in
-`webapps/better-notebooks/app.js`, so DSS never needs access to a CDN or a
-second static asset. The editable application source is
-`webapps/better-notebooks/app-runtime.js`. After editing it or
-`webapps/better-notebooks/editor.js`, run:
+The Dataiku webapp ships its editor and rich-output renderers bundled directly
+into the checked-in `webapps/better-notebooks/app.js`, so DSS never needs a
+CDN. The editable application source is `webapps/better-notebooks/app-runtime.js`.
+After editing it or its supporting modules, run:
 
 ```bash
 pnpm install
 pnpm run build:webapp
 ```
-
-The bundle adds Python/SQL syntax highlighting, project-aware completion,
-hover cards for visible datasets and columns, Tab completion/indentation, and
-inline Python syntax diagnostics.
 
 ## Install in a Dataiku development instance
 
@@ -53,9 +63,5 @@ renaming, and deleting a notebook also operate on native DSS notebooks. The
 left-hand folder tree stays browser-local by design: DSS has no notebook-folder
 structure to mirror.
 
-Python cells receive a non-executing syntax check while typing. Inside DSS,
-Run, Run All, and the run shortcuts connect to the notebook’s actual Jupyter
-kernel and persist stdout, tracebacks, and text display results into the native
-notebook. SQL cells are sent through the DSS `%sql` magic; an SQL connection or
-warehouse selector remains the next integration step. See
-[architecture](docs/architecture.md) for remaining work.
+Inside DSS, cell execution connects to the notebook’s actual Jupyter kernel,
+and its resulting outputs are persisted back to the native notebook.
