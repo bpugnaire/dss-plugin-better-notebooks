@@ -681,7 +681,8 @@ function renderCells() {
     const headingLevel = heading ? heading[1].length : 0;
     if (headingLevel && headingLevel <= collapsedAtLevel) collapsedAtLevel = 0;
     const node = template.content.firstElementChild.cloneNode(true);
-    node.dataset.id = data.id; node.dataset.type = data.type; node.draggable = true;
+    node.dataset.id = data.id; node.dataset.type = data.type; node.draggable = false;
+    node.querySelector('.drag-handle').draggable = true;
     if (state.selected.has(data.id)) node.classList.add('selected');
     if (state.activeCellId === data.id) node.classList.add('active');
     if (data.running) node.classList.add('running');
@@ -916,7 +917,7 @@ cellsEl.addEventListener('click', event => {
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
 cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
 cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter, newCell(button.dataset.insertType)); });
-cellsEl.addEventListener('dragstart', event => { const cell = event.target.closest('.cell'); if (!cell || !event.target.closest('.drag-handle')) { event.preventDefault(); return; } state.dragId = cell.dataset.id; state.dragIds = state.selected.has(cell.dataset.id) ? [...state.selected] : [cell.dataset.id]; state.dragIds.forEach(id => document.querySelector(`[data-id="${id}"]`)?.classList.add('dragging')); });
+cellsEl.addEventListener('dragstart', event => { const handle = event.target.closest('.drag-handle'); const cell = handle?.closest('.cell'); if (!cell) { event.preventDefault(); return; } event.dataTransfer?.setData('text/plain', cell.dataset.id); event.dataTransfer.effectAllowed = 'move'; state.dragId = cell.dataset.id; state.dragIds = state.selected.has(cell.dataset.id) ? [...state.selected] : [cell.dataset.id]; state.dragIds.forEach(id => document.querySelector(`[data-id="${id}"]`)?.classList.add('dragging')); });
 cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (!cell || state.dragIds.includes(cell.dataset.id)) return; const bounds = cell.getBoundingClientRect(); cell.classList.toggle('drop-after', event.clientY > bounds.top + bounds.height / 2); cell.classList.add('drop-target'); if (event.clientY < 85) window.scrollBy({ top: -18 }); if (event.clientY > window.innerHeight - 85) window.scrollBy({ top: 18 }); });
 cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.classList.remove('drop-target'));
 cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCells(state.dragIds, cell.dataset.id, cell.classList.contains('drop-after')); });
