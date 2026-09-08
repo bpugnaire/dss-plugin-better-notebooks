@@ -8,6 +8,7 @@ import { captureScrollPositions as captureRenderScroll, restoreScrollPositions a
 import { datasetVariableName as datasetVariable, linkedDatasets as findLinkedDatasets } from './modules/dataset-integration.js';
 import { nativeDisplayMetadata, saveStatus } from './modules/dss-persistence.js';
 import { sectionModel } from './modules/markdown-sections.js';
+import { renderMarkdown } from './modules/markdown-renderer.js';
 
 const webappConfig = typeof dataiku !== 'undefined' && typeof dataiku.getWebAppConfig === 'function'
   ? dataiku.getWebAppConfig() : {};
@@ -663,20 +664,7 @@ function dataframeMarkup(html, cellId = '') {
   const rowCount = sourceTable.querySelectorAll('tbody tr').length;
   return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><label class="dataframe-filter">⌕<input type="search" placeholder="Filter rows" aria-label="Filter DataFrame rows" /></label><button type="button" class="create-dataset" data-create-dataset-from-cell="${escapeHTML(cellId)}">Create dataset</button><button type="button" class="chart-dataframe">Chart</button><button type="button" class="explore-dataframe">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
 }
-function markdownMarkup(source, section = null) {
-  return String(source || '').split('\n').map((line, lineIndex) => {
-    const heading = line.match(/^(#{1,3})\s+(.+?)\s*#*\s*$/);
-    if (heading) {
-      const level = heading[1].length;
-      const isSectionHeading = section?.lineIndex === lineIndex;
-      const toggle = isSectionHeading && section.collapsedCount
-        ? `<button class="markdown-fold" type="button" data-toggle-section="${escapeHTML(section.cellId)}" aria-expanded="${section.collapsed ? 'false' : 'true'}" aria-label="${section.collapsed ? 'Expand' : 'Collapse'} ${escapeHTML(section.title)} section" title="${section.collapsed ? 'Expand' : 'Collapse'} section"><span>${section.collapsed ? '›' : '⌄'}</span></button>`
-        : '<span class="markdown-fold-spacer" aria-hidden="true"></span>';
-      return `<h${level} class="markdown-heading">${toggle}<span>${escapeHTML(heading[2])}</span></h${level}>`;
-    }
-    return line ? `<p>${escapeHTML(line)}</p>` : '';
-  }).join('');
-}
+function markdownMarkup(source) { return renderMarkdown(source); }
 function autoHeight(textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`; }
 function renderCells() {
   const scrollPositions = captureRenderScroll(cellsEl);
@@ -694,11 +682,19 @@ function renderCells() {
     if (state.activeCellId === data.id) node.classList.add('active');
     if (data.running) node.classList.add('running');
     if (markdownSections.hidden.has(data.id)) node.classList.add('section-hidden');
+    if (section?.collapsedCount) {
+      const collapseButton = node.querySelector('.section-collapse');
+      collapseButton.classList.remove('hidden');
+      collapseButton.dataset.toggleSection = data.id;
+      collapseButton.textContent = data.collapsed ? '›' : '⌄';
+      collapseButton.title = `${data.collapsed ? 'Expand' : 'Collapse'} ${section.title} section`;
+      collapseButton.setAttribute('aria-label', collapseButton.title);
+    }
     const language = node.querySelector('.cell-language'); language.classList.add(data.type);
     const editorHost = node.querySelector('.code-editor');
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown'
-      ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source, section ? { ...section, collapsed: Boolean(data.collapsed) } : null)}${data.collapsed && section?.collapsedCount ? `<button class="collapsed-section-summary" type="button" data-toggle-section="${escapeHTML(data.id)}">${section.collapsedCount} cell${section.collapsedCount === 1 ? '' : 's'} collapsed</button>` : ''}</div>`
+      ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}${data.collapsed && section?.collapsedCount ? `<button class="collapsed-section-summary" type="button" data-toggle-section="${escapeHTML(data.id)}">${section.collapsedCount} cell${section.collapsedCount === 1 ? '' : 's'} collapsed</button>` : ''}</div>`
       : outputMarkup(data.output, data.id);
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
     const hasError = data.meta === 'Execution failed' || data.output?.outputs?.some(output => output.output_type === 'error');
