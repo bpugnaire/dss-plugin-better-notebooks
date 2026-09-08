@@ -30,7 +30,7 @@
 
         <div class="sidebar-project-context">
           <div class="sidebar-project-path"><span>PROJECT</span><strong id="crumb-project-name">Current project</strong><em id="crumb-notebook-name">Explore customer behaviour</em></div>
-          <div class="sidebar-project-actions"><span class="saved-state" id="saved-state">Saved locally</span><button class="icon-button" id="settings-button" title="Notebook settings" aria-label="Notebook settings">⚙</button><button class="avatar" aria-label="Profile">BP</button></div>
+          <div class="sidebar-project-actions"><span class="saved-state" id="saved-state">Saved locally</span><button class="icon-button small hidden" id="retry-save" title="Retry save" aria-label="Retry save">↻</button><button class="icon-button" id="settings-button" title="Notebook settings" aria-label="Notebook settings">⚙</button><button class="avatar" aria-label="Profile">BP</button></div>
         </div>
         <div class="sidebar-footer">
           <div class="offline-dot"></div>
@@ -129,6 +129,14 @@
           <div><span>Show or accept completion</span><kbd>⇥</kbd></div>
         </div>
         <footer><button class="button primary" id="done-settings">Done</button></footer>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-title">
+      <section class="settings-modal-card recovery-modal-card">
+        <header><div><span class="eyebrow">RECOVERY DRAFT</span><h2 id="recovery-title">Unsaved notebook edits found</h2></div></header>
+        <p id="recovery-summary"></p>
+        <details class="recovery-diff"><summary>Inspect differences</summary><ul id="recovery-diff-list"></ul></details>
+        <footer><button class="button ghost" id="use-dss-version">Use DSS version</button><button class="button primary" id="restore-recovery-draft">Restore local draft</button></footer>
       </section>
     </div>
     <div class="modal-backdrop hidden" id="folder-modal" role="dialog" aria-modal="true" aria-labelledby="folder-title">

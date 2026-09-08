@@ -1,5 +1,12 @@
 import * as BetterNotebookEditor from './editor.js';
 import { hydrateRichMime, renderRichMime } from './mime-renderers.js';
+import { createNotebookState, recordHistory, resetHistory as resetNotebookHistory, restoreHistory } from './notebook-state.js';
+import { compareCells, loadDraft, removeDraft, saveDraft } from './recovery-drafts.js';
+import { pythonExport } from './modules/notebook-export.js';
+import { jupyterMessage as makeJupyterMessage, jupyterOutput as parseJupyterOutput } from './modules/kernel-protocol.js';
+import { captureScrollPositions as captureRenderScroll, restoreScrollPositions as restoreRenderScroll } from './modules/rendering.js';
+import { datasetVariableName as datasetVariable, linkedDatasets as findLinkedDatasets } from './modules/dataset-integration.js';
+import { nativeDisplayMetadata, saveStatus } from './modules/dss-persistence.js';
 
 const webappConfig = typeof dataiku !== 'undefined' && typeof dataiku.getWebAppConfig === 'function'
   ? dataiku.getWebAppConfig() : {};
@@ -16,8 +23,11 @@ let DATASETS = [
 const projectContext = { name: 'Current project', key: '', isDss: false, connections: [], sqlConnection: '', managedConnection: 'filesystem_managed' };
 const dss = { enabled: false, loading: false, workspaceLoaded: false, runtimes: [], activeRuntimeId: 'dss_builtin', kernel: null };
 let dssSaveTimer;
+let lastSuccessfulSaveAt = null;
+let saveFailure = null;
 let selectedDatasetName = '';
 const diagnosticsTimers = new Map();
+let pendingRecovery = null;
 
 const TABLE = {
   columns: [['customer_id', 'string'], ['country', 'string'], ['orders', 'int'], ['lifetime_value', 'decimal'], ['last_order', 'date']],
@@ -38,7 +48,7 @@ const starterCells = [
   { id: crypto.randomUUID(), type: 'python', source: '# Try a quick check\ncustomers.isna().sum().sort_values(ascending=False).head(10)', meta: '' },
 ];
 
-const state = { notebooks: loadNotebooks(), activeNotebookId: null, notebookListMode: 'all', cells: [], selected: new Set(), clipboard: [], dragId: null, dragIds: [], activeCellId: null, history: [], historyIndex: -1, collapsedHeadings: new Set(), searchQuery: '', searchIndex: 0 };
+const state = createNotebookState(loadNotebooks());
 const execution = { runningAll: false, stopRequested: false };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
@@ -77,7 +87,7 @@ function savedNotebookLayout() {
   try { return JSON.parse(localStorage.getItem(storageKey('notebooks'))) || {}; }
   catch { return {}; }
 }
-function resetHistory() { state.history = [JSON.stringify(state.cells)]; state.historyIndex = 0; }
+function resetHistory() { resetNotebookHistory(state); }
 async function switchNotebook(id) {
   const notebook = state.notebooks.notebooks.find(item => item.id === id); if (!notebook || id === state.activeNotebookId) return;
   if (notebook.remote && !notebook.loaded) {
@@ -91,26 +101,22 @@ function persistNotebooks() {
   // Native cells are authoritative in DSS. Persist only their local display
   // metadata so reloads retain folders without risking stale notebook content.
   const notebooks = state.notebooks.notebooks.map(notebook => notebook.remote
-    ? { id: notebook.id, name: notebook.name, open: notebook.open, updatedAt: notebook.updatedAt, folderId: notebook.folderId, remote: true, runtimeId: notebook.runtimeId }
+    ? nativeDisplayMetadata(notebook)
     : notebook);
   localStorage.setItem(storageKey('notebooks'), JSON.stringify({ ...state.notebooks, notebooks }));
 }
 function draftKey(notebook = activeNotebook()) { return storageKey(`draft-${notebook?.id || 'none'}`); }
-function persistDraft(notebook = activeNotebook()) {
-  if (notebook) localStorage.setItem(draftKey(notebook), JSON.stringify({ savedAt: Date.now(), cells: state.cells }));
-}
-function clearDraft(notebook = activeNotebook()) { if (notebook) localStorage.removeItem(draftKey(notebook)); }
-function save(recordHistory = true) {
+function persistDraft(notebook = activeNotebook()) { if (notebook) saveDraft(localStorage, draftKey(notebook), state.cells); }
+function clearDraft(notebook = activeNotebook()) { if (notebook) removeDraft(localStorage, draftKey(notebook)); }
+function save(shouldRecordHistory = true) {
   const notebook = activeNotebook();
   notebook.cells = state.cells; notebook.updatedAt = Date.now(); state.notebooks.activeNotebookId = state.activeNotebookId;
   if (!notebook.remote) persistNotebooks();
   persistDraft(notebook);
-  if (recordHistory) {
+  if (shouldRecordHistory) {
     const snapshot = JSON.stringify(state.cells);
     if (state.history[state.historyIndex] !== snapshot) {
-      state.history.splice(state.historyIndex + 1);
-      state.history.push(snapshot);
-      state.historyIndex = state.history.length - 1;
+      recordHistory(state);
     }
   }
   if (notebook.remote && !dss.workspaceLoaded) {
@@ -119,10 +125,7 @@ function save(recordHistory = true) {
   else setSavedState('Saved locally');
 }
 function undo() {
-  if (state.historyIndex <= 0) return;
-  state.historyIndex -= 1;
-  state.cells = JSON.parse(state.history[state.historyIndex]);
-  state.selected.clear();
+  if (!restoreHistory(state)) return;
   save(false); renderCells();
 }
 function escapeHTML(value) { return value.replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[ch]); }
@@ -176,21 +179,6 @@ function jupyterSocketUrl(kernelId, sessionId) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/jupyter/api/kernels/${encodeURIComponent(kernelId)}/channels?session_id=${encodeURIComponent(sessionId)}`;
 }
-function jupyterMessage(type, content, sessionId) {
-  return {
-    header: { msg_id: crypto.randomUUID(), username: 'better-notebooks', session: sessionId, msg_type: type, version: '5.3' },
-    parent_header: {}, metadata: {}, content,
-  };
-}
-function jupyterOutput(message) {
-  const type = message.header?.msg_type;
-  const content = message.content || {};
-  if (type === 'stream') return { output_type: 'stream', name: content.name || 'stdout', text: content.text || '' };
-  if (type === 'error') return { output_type: 'error', ename: content.ename || 'Error', evalue: content.evalue || '', traceback: content.traceback || [] };
-  if (type === 'execute_result') return { output_type: 'execute_result', execution_count: content.execution_count, data: content.data || {}, metadata: content.metadata || {} };
-  if (type === 'display_data' || type === 'update_display_data') return { output_type: 'display_data', data: content.data || {}, metadata: content.metadata || {} };
-  return null;
-}
 function finishJupyterExecution(kernel, messageId) {
   const request = kernel.pending.get(messageId); if (!request) return;
   clearTimeout(request.timeout); kernel.pending.delete(messageId); setKernelStatus('Connected', 'connected');
@@ -217,7 +205,7 @@ function handleJupyterMessage(event) {
     }
     return;
   }
-  const output = jupyterOutput(message);
+  const output = parseJupyterOutput(message);
   if (output) { request.outputs.push(output); request.onOutput?.(request.outputs); }
   if (message.header?.msg_type === 'execute_reply') {
     request.executionCount = message.content?.execution_count;
@@ -271,7 +259,7 @@ async function configureKernelDisplay(notebook, kernel) {
 }
 async function executeInDssKernel(notebook, source, onOutput, options = {}) {
   const kernel = await connectDssKernel(notebook);
-  const message = jupyterMessage('execute_request', {
+  const message = makeJupyterMessage('execute_request', {
     code: source, silent: Boolean(options.silent), store_history: !options.silent, user_expressions: {}, allow_stdin: false, stop_on_error: true,
   }, kernel.sessionId);
   return new Promise((resolve, reject) => {
@@ -288,7 +276,7 @@ async function inspectInDssKernel(notebook, code, cursorPos) {
   // Keep hover passive: only inspect an already-running notebook kernel.
   const kernel = dss.kernel;
   if (!kernel || kernel.notebookId !== notebook.id || kernel.socket.readyState !== WebSocket.OPEN) return '';
-  const message = jupyterMessage('inspect_request', { code, cursor_pos: cursorPos, detail_level: 0 }, kernel.sessionId);
+  const message = makeJupyterMessage('inspect_request', { code, cursor_pos: cursorPos, detail_level: 0 }, kernel.sessionId);
   return new Promise(resolve => {
     const timeout = setTimeout(() => { kernel.pending.delete(message.header.msg_id); resolve(''); }, 2500);
     kernel.pending.set(message.header.msg_id, { kind: 'inspect', resolve, timeout });
@@ -298,7 +286,7 @@ async function inspectInDssKernel(notebook, code, cursorPos) {
 async function completeInDssKernel(notebook, code, cursorPos) {
   const kernel = dss.kernel;
   if (!kernel || kernel.notebookId !== notebook.id || kernel.socket.readyState !== WebSocket.OPEN) return { matches: [] };
-  const message = jupyterMessage('complete_request', { code, cursor_pos: cursorPos }, kernel.sessionId);
+  const message = makeJupyterMessage('complete_request', { code, cursor_pos: cursorPos }, kernel.sessionId);
   return new Promise(resolve => {
     const timeout = setTimeout(() => { kernel.pending.delete(message.header.msg_id); resolve({ matches: [] }); }, 1400);
     kernel.pending.set(message.header.msg_id, { kind: 'complete', resolve, timeout });
@@ -314,6 +302,11 @@ function setSavedState(message, isError = false) {
   const status = document.querySelector('#saved-state');
   status.textContent = message;
   status.classList.toggle('error', isError);
+  document.querySelector('#retry-save')?.classList.toggle('hidden', !isError);
+}
+function markSaveSuccessful(message = 'Saved to DSS') {
+  lastSuccessfulSaveAt = Date.now(); saveFailure = null;
+  setSavedState(saveStatus(message, lastSuccessfulSaveAt));
 }
 function sourceText(source) { return Array.isArray(source) ? source.join('') : String(source || ''); }
 function outputText(value) {
@@ -350,14 +343,14 @@ async function saveDssNotebook(notebook) {
 function queueDssSave(notebook) {
   clearTimeout(dssSaveTimer); setSavedState('Saving to DSS…');
   dssSaveTimer = setTimeout(async () => {
-    try { await saveDssNotebook(notebook); setSavedState('Saved to DSS'); }
-    catch (error) { setSavedState(`DSS save failed: ${error.message}`, true); console.warn(error); }
+    try { await saveDssNotebook(notebook); markSaveSuccessful(); }
+    catch (error) { saveFailure = error; setSavedState(`Save failed — retry`, true); console.warn(error); }
   }, 650);
 }
 async function flushDssSave(notebook) {
   clearTimeout(dssSaveTimer);
   setSavedState('Saving to DSS…');
-  await saveDssNotebook(notebook);
+  await saveDssNotebook(notebook); markSaveSuccessful();
 }
 function queuePythonCheck(cell) {
   if (!dss.enabled || cell.type !== 'python') return;
@@ -402,10 +395,16 @@ async function loadDssNotebook(notebook) {
   notebook.loaded = true;
   notebook.language = 'PYTHON';
   notebook.runtimeId = runtimeIdFor(payload.notebook.metadata?.kernelspec);
-  try {
-    const draft = JSON.parse(localStorage.getItem(draftKey(notebook)) || 'null');
-    if (draft?.cells?.length && window.confirm(`A local recovery draft from ${new Date(draft.savedAt).toLocaleString()} is available for “${notebook.name}”. Restore it?`)) notebook.cells = draft.cells;
-  } catch { /* Ignore malformed local recovery data. */ }
+  const draft = loadDraft(localStorage, draftKey(notebook));
+  if (draft?.cells?.length) showRecoveryChoice(notebook, draft, notebook.cells);
+}
+function showRecoveryChoice(notebook, draft, dssCells) {
+  const changes = compareCells(draft.cells, dssCells);
+  if (!changes.length) { clearDraft(notebook); return; }
+  pendingRecovery = { notebook, draft, dssCells, changes };
+  document.querySelector('#recovery-summary').textContent = `A local draft saved ${new Date(draft.savedAt).toLocaleString()} differs from the current DSS notebook (${changes.length} changed cell${changes.length === 1 ? '' : 's'}).`;
+  document.querySelector('#recovery-diff-list').innerHTML = changes.map(change => `<li>${escapeHTML(change.summary)}</li>`).join('');
+  document.querySelector('#recovery-modal').classList.remove('hidden');
 }
 async function loadDssWorkspace() {
   if (!isDssWebappRuntime()) return;
@@ -532,14 +531,11 @@ function downloadNotebook(extension, contents, mime) {
 }
 function exportNotebook(kind) {
   if (kind === 'ipynb') return downloadNotebook('ipynb', JSON.stringify(notebookDocument(), null, 2), 'application/x-ipynb+json');
-  const python = state.cells.map(cell => cell.type === 'markdown' ? cell.source.split('\n').map(line => `# ${line}`).join('\n') : cell.type === 'sql' ? `# %% SQL\n${cell.source}` : `# %%\n${cell.source}`).join('\n\n');
+  const python = pythonExport(state.cells);
   downloadNotebook('py', python, 'text/x-python');
 }
 
-function linkedDatasets() {
-  const source = state.cells.map(cell => cell.source || '').join('\n');
-  return DATASETS.filter(dataset => source.includes(`"${dataset.name}"`) || source.includes(`'${dataset.name}'`) || new RegExp(`\\b${dataset.name.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`).test(source));
-}
+function linkedDatasets() { return findLinkedDatasets(state.cells, DATASETS); }
 function sqlExecutionSource(source) {
   // SQLExecutor2 is the DSS-supported way to run notebook SQL against an
   // explicitly selected connection, while keeping the visible cell as SQL.
@@ -557,7 +553,7 @@ function renderDatasets(filter = '') {
     }).join('')
     : '<p class="dataset-empty">No project datasets found.</p>';
 }
-function datasetVariableName(name) { return name.replace(/\W/g, '_'); }
+function datasetVariableName(name) { return datasetVariable(name); }
 function insertDatasetCell(dataset, mode = 'python') {
   const cell = newCell(mode === 'sql' ? 'sql' : 'python');
   const variable = datasetVariableName(dataset.name);
@@ -674,23 +670,8 @@ function markdownMarkup(source) {
   }).join('');
 }
 function autoHeight(textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`; }
-function captureScrollPositions() {
-  const positions = [{ node: window, top: window.scrollY, left: window.scrollX }];
-  let node = cellsEl.parentElement;
-  while (node) {
-    if (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth) positions.push({ node, top: node.scrollTop, left: node.scrollLeft });
-    node = node.parentElement;
-  }
-  return positions;
-}
-function restoreScrollPositions(positions) {
-  positions.forEach(({ node, top, left }) => {
-    if (node === window) window.scrollTo({ top, left, behavior: 'instant' });
-    else { node.scrollTop = top; node.scrollLeft = left; }
-  });
-}
 function renderCells() {
-  const scrollPositions = captureScrollPositions();
+  const scrollPositions = captureRenderScroll(cellsEl);
   const editorApi = BetterNotebookEditor;
   editorApi.destroyAll();
   cellsEl.innerHTML = '';
@@ -729,9 +710,9 @@ function renderCells() {
   // Removing the focused CodeMirror node can cause browsers to compensate by
   // scrolling after the first frame. Restore again after layout settles.
   requestAnimationFrame(() => {
-    restoreScrollPositions(scrollPositions);
-    requestAnimationFrame(() => restoreScrollPositions(scrollPositions));
-    window.setTimeout(() => restoreScrollPositions(scrollPositions), 0);
+    restoreRenderScroll(scrollPositions);
+    requestAnimationFrame(() => restoreRenderScroll(scrollPositions));
+    window.setTimeout(() => restoreRenderScroll(scrollPositions), 0);
   });
 }
 function renderToolbar() {
@@ -959,10 +940,10 @@ document.querySelector('#run-all').addEventListener('click', async () => {
   execution.runningAll = false; renderExecutionControls();
 });
 document.querySelector('#stop-run-all').addEventListener('click', () => { execution.stopRequested = true; setSavedState('Stopping after the current cell…'); });
-document.querySelector('#notebook-actions').addEventListener('click', () => document.querySelector('#notebook-actions-menu').classList.toggle('hidden'));
-document.querySelector('#notebook-actions-menu').addEventListener('click', async event => {
+document.querySelector('#notebook-actions')?.addEventListener('click', () => document.querySelector('#notebook-actions-menu')?.classList.toggle('hidden'));
+document.querySelector('#notebook-actions-menu')?.addEventListener('click', async event => {
   const action = event.target.dataset.notebookAction; if (!action) return;
-  document.querySelector('#notebook-actions-menu').classList.add('hidden');
+  document.querySelector('#notebook-actions-menu')?.classList.add('hidden');
   if (action === 'export-ipynb') exportNotebook('ipynb');
   if (action === 'export-py') exportNotebook('py');
   if (action === 'copy-python') { await navigator.clipboard?.writeText(state.cells.filter(cell => cell.type !== 'markdown').map(cell => cell.source).join('\n\n# %%\n\n')); setSavedState('Python cells copied'); }
@@ -974,7 +955,12 @@ document.querySelector('#notebook-actions-menu').addEventListener('click', async
   if (action === 'expand-all') { state.cells.forEach(cell => { cell.collapsed = false; }); state.collapsedHeadings.clear(); save(false); renderCells(); }
 });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
-document.querySelector('#refresh-datasets').addEventListener('click', loadProjectContext);
+document.querySelector('#refresh-datasets')?.addEventListener('click', loadProjectContext);
+document.querySelector('#retry-save')?.addEventListener('click', async () => {
+  if (!activeNotebook()?.remote) return;
+  try { await flushDssSave(activeNotebook()); }
+  catch (error) { saveFailure = error; setSavedState('Save failed — retry', true); }
+});
 document.querySelector('#executor-selector').addEventListener('change', event => {
   dss.activeRuntimeId = event.target.value;
   const notebook = activeNotebook();
@@ -990,7 +976,7 @@ document.querySelector('#sql-executor-selector').addEventListener('change', even
   setSavedState(projectContext.sqlConnection ? `SQL connection: ${projectContext.sqlConnection}` : 'No SQL connection selected');
 });
 document.querySelector('#dataset-list').addEventListener('click', event => { const dataset = event.target.closest('[data-dataset]'); if (dataset) selectDataset(dataset.dataset.dataset); });
-document.querySelector('#dataset-inspector').addEventListener('click', event => {
+document.querySelector('#dataset-inspector')?.addEventListener('click', event => {
   const python = event.target.closest('[data-insert-dataset]'); if (python) { const dataset = DATASETS.find(item => item.name === python.dataset.insertDataset); if (dataset) insertDatasetCell(dataset); return; }
   const sql = event.target.closest('[data-insert-dataset-sql]'); if (sql) { const dataset = DATASETS.find(item => item.name === sql.dataset.insertDatasetSql); if (dataset) insertDatasetCell(dataset, 'sql'); }
 });
@@ -1032,7 +1018,7 @@ document.querySelector('#new-folder-button').addEventListener('click', addFolder
 document.querySelector('#explorer-view-button').addEventListener('click', () => { document.querySelector('.sidebar').classList.remove('outline-view'); document.querySelector('.sidebar').classList.add('explorer-view'); document.querySelector('#explorer-view-button').classList.add('active'); document.querySelector('#outline-view-button').classList.remove('active'); });
 document.querySelector('#outline-view-button').addEventListener('click', () => { document.querySelector('.sidebar').classList.remove('explorer-view'); document.querySelector('.sidebar').classList.add('outline-view'); document.querySelector('#outline-view-button').classList.add('active'); document.querySelector('#explorer-view-button').classList.remove('active'); });
 document.querySelector('#sidebar-collapse-button').addEventListener('click', () => { document.querySelector('.sidebar').classList.toggle('collapsed'); document.querySelector('.app-shell').classList.toggle('sidebar-collapsed'); });
-document.querySelector('#data-panel-toggle').addEventListener('click', event => {
+document.querySelector('#data-panel-toggle')?.addEventListener('click', event => {
   const shell = document.querySelector('.app-shell'); const collapsed = shell.classList.toggle('data-panel-collapsed');
   event.currentTarget.setAttribute('aria-pressed', String(collapsed));
   event.currentTarget.setAttribute('aria-label', collapsed ? 'Show project datasets' : 'Hide project datasets');
@@ -1135,10 +1121,10 @@ cellsEl.addEventListener('click', event => {
   const explore = event.target.closest('.explore-dataframe'); if (explore) { const section = explore.closest('.dataframe-output'); document.querySelector('#dataframe-modal-content').innerHTML = section.outerHTML; document.querySelector('#dataframe-modal').classList.remove('hidden'); }
 });
 const dataframeModal = document.querySelector('#dataframe-modal');
-const closeDataframeModal = () => dataframeModal.classList.add('hidden');
-document.querySelector('#close-dataframe-modal').addEventListener('click', closeDataframeModal);
-dataframeModal.addEventListener('click', event => { if (event.target === dataframeModal) closeDataframeModal(); });
-document.querySelector('#cell-search').addEventListener('input', event => {
+const closeDataframeModal = () => dataframeModal?.classList.add('hidden');
+document.querySelector('#close-dataframe-modal')?.addEventListener('click', closeDataframeModal);
+dataframeModal?.addEventListener('click', event => { if (event.target === dataframeModal) closeDataframeModal(); });
+document.querySelector('#cell-search')?.addEventListener('input', event => {
   state.searchQuery = event.target.value.trim().toLowerCase(); state.searchIndex = 0;
   const matches = state.cells.filter(cell => state.searchQuery && cell.source.toLowerCase().includes(state.searchQuery));
   document.querySelector('#cell-search-count').textContent = state.searchQuery ? `${matches.length} match${matches.length === 1 ? '' : 'es'}` : '';
@@ -1146,7 +1132,7 @@ document.querySelector('#cell-search').addEventListener('input', event => {
   matches.forEach(cell => document.querySelector(`[data-id="${cell.id}"]`)?.classList.add('search-match'));
   if (matches[0]) document.querySelector(`[data-id="${matches[0].id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
-document.querySelector('#cell-search').addEventListener('keydown', event => {
+document.querySelector('#cell-search')?.addEventListener('keydown', event => {
   if (event.key !== 'Enter' || !state.searchQuery) return;
   const matches = state.cells.filter(cell => cell.source.toLowerCase().includes(state.searchQuery)); if (!matches.length) return;
   event.preventDefault(); state.searchIndex = (state.searchIndex + 1) % matches.length;
@@ -1160,6 +1146,15 @@ document.querySelector('#settings-button').addEventListener('click', () => setti
 document.querySelector('#close-settings').addEventListener('click', closeSettings);
 document.querySelector('#done-settings').addEventListener('click', closeSettings);
 settingsModal.addEventListener('click', event => { if (event.target === settingsModal) closeSettings(); });
+document.querySelector('#restore-recovery-draft')?.addEventListener('click', () => {
+  if (!pendingRecovery) return;
+  pendingRecovery.notebook.cells = pendingRecovery.draft.cells; state.cells = pendingRecovery.draft.cells;
+  document.querySelector('#recovery-modal')?.classList.add('hidden'); setSavedState('Recovery draft restored — saving to DSS…'); save(false); renderWorkspace(); pendingRecovery = null;
+});
+document.querySelector('#use-dss-version')?.addEventListener('click', () => {
+  if (!pendingRecovery) return;
+  clearDraft(pendingRecovery.notebook); document.querySelector('#recovery-modal')?.classList.add('hidden'); setSavedState('Using current DSS version'); pendingRecovery = null;
+});
 document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape') { closeSettings(); closeFolderModal(); closeDataframeModal(); return; }

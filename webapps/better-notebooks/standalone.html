@@ -98,8 +98,9 @@
       <article class="cell">
         <div class="cell-rail"><button class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</button><input class="cell-check" type="checkbox" aria-label="Select cell" /></div>
         <div class="cell-content">
-          <header class="cell-header"><div class="cell-type"><button class="cell-type-selector" title="Change cell type"><span class="cell-language"></span><span class="type-chevron">⌄</span></button><div class="type-options" role="menu"><button data-cell-type="python" role="menuitem"><span>⌘</span> Python</button><button data-cell-type="sql" role="menuitem"><span>▤</span> SQL</button><button data-cell-type="markdown" role="menuitem"><span>¶</span> Markdown</button></div></div><div class="cell-actions"><button class="run-cell" title="Run cell">▶</button><button class="ai-help" title="Ask AI for help" aria-label="Ask AI for help">✦</button><button class="delete-cell icon-delete" title="Delete cell" aria-label="Delete cell">⌫</button><button class="more-cell" title="More actions" aria-label="More actions">⋮</button></div></header>
-          <textarea class="code-input" spellcheck="false" aria-label="Cell code"></textarea>
+          <header class="cell-header"><div class="cell-type"><button class="cell-type-selector" title="Change cell type"><span class="cell-language"></span><span class="type-chevron">⌄</span></button><div class="type-options" role="menu"><button data-cell-type="python" role="menuitem"><span>⌘</span> Python</button><button data-cell-type="sql" role="menuitem"><span>▤</span> SQL</button><button data-cell-type="markdown" role="menuitem"><span>¶</span> Markdown</button></div><button class="run-cell" title="Run cell" aria-label="Run cell">▶</button><span class="execution-meta execution-meta-top" aria-live="polite"></span></div><div class="cell-actions"><button class="ai-help" title="Ask AI for help" aria-label="Ask AI for help">✦</button><button class="delete-cell icon-delete" title="Delete cell" aria-label="Delete cell">⌫</button><button class="more-cell" title="More actions" aria-label="More actions">⋮</button><div class="cell-more-menu"><button data-cell-action="run-above">Run above</button><button data-cell-action="run-below">Run below</button><button data-cell-action="clear-output">Clear output</button><button data-cell-action="format">Format cell</button></div></div></header>
+          <div class="code-editor" aria-label="Cell code"></div>
+          <div class="cell-diagnostic" role="status" hidden></div>
           <div class="cell-output"></div>
           <div class="cell-footer"><span class="execution-meta"></span></div>
         </div>
@@ -129,6 +130,14 @@
         <footer><button class="button ghost" type="button" id="cancel-folder">Cancel</button><button class="button primary" type="submit">Create folder</button></footer>
       </form>
     </div>
+    <!-- Kept structurally aligned with body.html so browser smoke tests exercise
+         the same render path as the DSS webapp. -->
+    <span id="datasets-panel-title" hidden>PROJECT DATASETS</span><span id="runtime-notice" hidden></span><div id="linked-datasets" hidden></div><div id="dataset-inspector" class="hidden"></div>
+    <div id="notebook-find" hidden><input id="cell-search" /><span id="cell-search-count"></span></div><button id="refresh-datasets" hidden></button><button id="data-panel-toggle" hidden></button><button id="retry-save" class="hidden"></button>
+    <button id="notebook-actions" hidden></button><div id="notebook-actions-menu" class="hidden"></div>
+    <div class="modal-backdrop hidden" id="recovery-modal"><section><h2 id="recovery-title">Recovery</h2><p id="recovery-summary"></p><ul id="recovery-diff-list"></ul><button id="restore-recovery-draft"></button><button id="use-dss-version"></button></section></div>
+    <div class="modal-backdrop hidden" id="dataframe-modal"><button id="close-dataframe-modal"></button><div id="dataframe-modal-title"></div><div id="dataframe-modal-content"></div></div>
     <script src="app.js"></script>
+    <script src="browser-smoke.js"></script>
   </body>
 </html>

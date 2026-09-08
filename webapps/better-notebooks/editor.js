@@ -178,7 +178,10 @@ export function setDiagnostic(id, diagnostic) {
     const from = Math.min(view.state.doc.line(line).from + Math.max((item.column || 1) - 1, 0), view.state.doc.length);
     return { from, to: Math.min(from + Math.max(item.length || 1, 1), view.state.doc.length), severity: item.severity || 'error', message: item.message || 'Diagnostic' };
   });
-  view.dispatch({ effects: setDiagnostics(view.state, diagnostics) });
+  // `setDiagnostics` returns a transaction specification, not a StateEffect.
+  // Dispatching it as an effect aborts CodeMirror's render loop after the
+  // first checked native cell.
+  view.dispatch(setDiagnostics(view.state, diagnostics));
 }
 
 export function replaceSource(id, source) {
