@@ -1152,7 +1152,7 @@ document.querySelector('#cell-search').addEventListener('keydown', event => {
   event.preventDefault(); state.searchIndex = (state.searchIndex + 1) % matches.length;
   document.querySelector(`[data-id="${matches[state.searchIndex].id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
-document.querySelector('#batch-toolbar').addEventListener('click', event => { const action = event.target.dataset.batchAction; if (!action) return; if (action === 'run') state.selected.forEach(runCell); if (action === 'duplicate') duplicateSelected(); if (action === 'copy') copySelected(); if (action === 'cut') copySelected(true); if (action === 'delete') deleteSelected(); if (action === 'clear') { state.selected.clear(); renderCells(); } });
+document.querySelector('#batch-toolbar').addEventListener('click', async event => { const action = event.target.dataset.batchAction; if (!action) return; if (action === 'run') { for (const cell of state.cells.filter(cell => state.selected.has(cell.id))) if (!await runCell(cell.id)) break; } if (action === 'duplicate') duplicateSelected(); if (action === 'copy') copySelected(); if (action === 'cut') copySelected(true); if (action === 'delete') deleteSelected(); if (action === 'clear') { state.selected.clear(); renderCells(); } });
 document.querySelector('.workspace').addEventListener('click', event => { if (!state.selected.size || event.target.closest('.cell, button, textarea, input, .batch-toolbar')) return; state.selected.clear(); renderCells(); });
 const settingsModal = document.querySelector('#settings-modal');
 const closeSettings = () => settingsModal.classList.add('hidden');
