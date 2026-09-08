@@ -50,6 +50,7 @@ const starterCells = [
 
 const state = createNotebookState(loadNotebooks());
 const execution = { runningAll: false, stopRequested: false };
+const dragScroll = { frame: 0, pointerY: null, container: null };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
 
@@ -878,6 +879,42 @@ function moveCells(dragIds, targetId, after = false) {
   state.cells = [...before, ...moving, ...rest]; save(); renderCells();
 }
 function moveCell(dragId, targetId) { moveCells([dragId], targetId); }
+function scrollableDragContainer(start) {
+  let node = start instanceof Element ? start : cellsEl;
+  while (node && node !== document.body && node !== document.documentElement) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (/(auto|scroll)/.test(overflowY) && node.scrollHeight > node.clientHeight) return node;
+    node = node.parentElement;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+function stopDragAutoScroll() {
+  if (dragScroll.frame) cancelAnimationFrame(dragScroll.frame);
+  dragScroll.frame = 0; dragScroll.pointerY = null; dragScroll.container = null;
+}
+function runDragAutoScroll() {
+  if (!state.dragIds.length || dragScroll.pointerY == null) { stopDragAutoScroll(); return; }
+  const container = dragScroll.container || document.scrollingElement || document.documentElement;
+  const isDocument = container === document.body || container === document.documentElement || container === document.scrollingElement;
+  const bounds = isDocument ? { top: 0, bottom: window.innerHeight } : container.getBoundingClientRect();
+  const edge = Math.min(120, Math.max(72, (bounds.bottom - bounds.top) * .12));
+  const topDistance = dragScroll.pointerY - bounds.top;
+  const bottomDistance = bounds.bottom - dragScroll.pointerY;
+  let speed = 0;
+  if (topDistance < edge) speed = -Math.ceil(4 + 24 * (1 - Math.max(0, topDistance) / edge));
+  else if (bottomDistance < edge) speed = Math.ceil(4 + 24 * (1 - Math.max(0, bottomDistance) / edge));
+  if (speed) {
+    if (isDocument) window.scrollBy(0, speed);
+    else container.scrollTop += speed;
+  }
+  dragScroll.frame = requestAnimationFrame(runDragAutoScroll);
+}
+function updateDragAutoScroll(event) {
+  if (!state.dragIds.length) return;
+  dragScroll.pointerY = event.clientY;
+  dragScroll.container = scrollableDragContainer(event.target);
+  if (!dragScroll.frame) dragScroll.frame = requestAnimationFrame(runDragAutoScroll);
+}
 async function runRelative(id, direction) {
   const index = cellIndex(id); const range = direction === 'above' ? state.cells.slice(0, index + 1) : state.cells.slice(index);
   for (const cell of range) if (!await runCell(cell.id)) break;
@@ -932,11 +969,13 @@ cellsEl.addEventListener('dragstart', event => {
   }
   state.dragId = cell.dataset.id; state.dragIds = state.selected.has(cell.dataset.id) ? [...state.selected] : [cell.dataset.id];
   state.dragIds.forEach(id => document.querySelector(`[data-id="${id}"]`)?.classList.add('dragging'));
+  dragScroll.container = scrollableDragContainer(cell);
 });
-cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (!cell || state.dragIds.includes(cell.dataset.id)) return; const bounds = cell.getBoundingClientRect(); cell.classList.toggle('drop-after', event.clientY > bounds.top + bounds.height / 2); cell.classList.add('drop-target'); if (event.clientY < 85) window.scrollBy({ top: -18 }); if (event.clientY > window.innerHeight - 85) window.scrollBy({ top: 18 }); });
+document.addEventListener('dragover', updateDragAutoScroll);
+cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (!cell || state.dragIds.includes(cell.dataset.id)) return; const bounds = cell.getBoundingClientRect(); cell.classList.toggle('drop-after', event.clientY > bounds.top + bounds.height / 2); cell.classList.add('drop-target'); });
 cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.classList.remove('drop-target'));
-cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCells(state.dragIds, cell.dataset.id, cell.classList.contains('drop-after')); });
-cellsEl.addEventListener('dragend', () => { state.dragId = null; state.dragIds = []; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target', 'drop-after')); });
+cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCells(state.dragIds, cell.dataset.id, cell.classList.contains('drop-after')); stopDragAutoScroll(); });
+cellsEl.addEventListener('dragend', () => { stopDragAutoScroll(); state.dragId = null; state.dragIds = []; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target', 'drop-after')); });
 
 function renderExecutionControls() {
   document.querySelector('#run-all').disabled = execution.runningAll;
