@@ -7,6 +7,7 @@ import { jupyterMessage as makeJupyterMessage, jupyterOutput as parseJupyterOutp
 import { captureScrollPositions as captureRenderScroll, restoreScrollPositions as restoreRenderScroll } from './modules/rendering.js';
 import { datasetVariableName as datasetVariable, linkedDatasets as findLinkedDatasets } from './modules/dataset-integration.js';
 import { nativeDisplayMetadata, saveStatus } from './modules/dss-persistence.js';
+import { sectionModel } from './modules/markdown-sections.js';
 
 const webappConfig = typeof dataiku !== 'undefined' && typeof dataiku.getWebAppConfig === 'function'
   ? dataiku.getWebAppConfig() : {};
@@ -662,12 +663,18 @@ function dataframeMarkup(html, cellId = '') {
   const rowCount = sourceTable.querySelectorAll('tbody tr').length;
   return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><label class="dataframe-filter">⌕<input type="search" placeholder="Filter rows" aria-label="Filter DataFrame rows" /></label><button type="button" class="create-dataset" data-create-dataset-from-cell="${escapeHTML(cellId)}">Create dataset</button><button type="button" class="chart-dataframe">Chart</button><button type="button" class="explore-dataframe">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
 }
-function markdownMarkup(source) {
-  return escapeHTML(source).split('\n').map(line => {
-    if (line.startsWith('# ')) return `<h1>${line.slice(2)}</h1>`;
-    if (line.startsWith('## ')) return `<h2>${line.slice(3)}</h2>`;
-    if (line.startsWith('### ')) return `<h3>${line.slice(4)}</h3>`;
-    return line ? `<p>${line}</p>` : '';
+function markdownMarkup(source, section = null) {
+  return String(source || '').split('\n').map((line, lineIndex) => {
+    const heading = line.match(/^(#{1,3})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      const level = heading[1].length;
+      const isSectionHeading = section?.lineIndex === lineIndex;
+      const toggle = isSectionHeading && section.collapsedCount
+        ? `<button class="markdown-fold" type="button" data-toggle-section="${escapeHTML(section.cellId)}" aria-expanded="${section.collapsed ? 'false' : 'true'}" aria-label="${section.collapsed ? 'Expand' : 'Collapse'} ${escapeHTML(section.title)} section" title="${section.collapsed ? 'Expand' : 'Collapse'} section"><span>${section.collapsed ? '›' : '⌄'}</span></button>`
+        : '<span class="markdown-fold-spacer" aria-hidden="true"></span>';
+      return `<h${level} class="markdown-heading">${toggle}<span>${escapeHTML(heading[2])}</span></h${level}>`;
+    }
+    return line ? `<p>${escapeHTML(line)}</p>` : '';
   }).join('');
 }
 function autoHeight(textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`; }
@@ -676,22 +683,23 @@ function renderCells() {
   const editorApi = BetterNotebookEditor;
   editorApi.destroyAll();
   cellsEl.innerHTML = '';
-  let collapsedAtLevel = 0;
+  const markdownSections = sectionModel(state.cells);
   state.cells.forEach((data, index) => {
-    const heading = data.type === 'markdown' ? data.source.match(/^(#{1,3})\s+/) : null;
-    const headingLevel = heading ? heading[1].length : 0;
-    if (headingLevel && headingLevel <= collapsedAtLevel) collapsedAtLevel = 0;
+    const section = markdownSections.sections.get(data.id);
     const node = template.content.firstElementChild.cloneNode(true);
     node.dataset.id = data.id; node.dataset.type = data.type; node.draggable = false;
+    if (data.type === 'markdown') node.classList.add('markdown-display');
     node.querySelector('.drag-handle').draggable = true;
     if (state.selected.has(data.id)) node.classList.add('selected');
     if (state.activeCellId === data.id) node.classList.add('active');
     if (data.running) node.classList.add('running');
-    if (collapsedAtLevel) node.classList.add('section-hidden');
+    if (markdownSections.hidden.has(data.id)) node.classList.add('section-hidden');
     const language = node.querySelector('.cell-language'); language.classList.add(data.type);
     const editorHost = node.querySelector('.code-editor');
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
-    node.querySelector('.cell-output').innerHTML = data.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}</div>` : outputMarkup(data.output, data.id);
+    node.querySelector('.cell-output').innerHTML = data.type === 'markdown'
+      ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source, section ? { ...section, collapsed: Boolean(data.collapsed) } : null)}${data.collapsed && section?.collapsedCount ? `<button class="collapsed-section-summary" type="button" data-toggle-section="${escapeHTML(data.id)}">${section.collapsedCount} cell${section.collapsedCount === 1 ? '' : 's'} collapsed</button>` : ''}</div>`
+      : outputMarkup(data.output, data.id);
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
     const hasError = data.meta === 'Execution failed' || data.output?.outputs?.some(output => output.output_type === 'error');
     const meta = node.querySelector('.execution-meta-top'); meta.textContent = data.meta ? `${hasError ? '✕' : '✓'} ${data.meta}` : ''; if (data.meta) meta.classList.add(hasError ? 'error' : 'success');
@@ -699,13 +707,14 @@ function renderCells() {
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     if (data.running) { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
     cellsEl.appendChild(node);
-    editorApi.mount({
-      id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS, symbols: () => symbolsBefore(data.id), connections: projectContext.connections,
-      onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id), onInspect: ({ code, pos }) => inspectInDssKernel(activeNotebook(), code, pos), onComplete: ({ code, pos }) => completeInDssKernel(activeNotebook(), code, pos),
-    });
-    editorApi.setDiagnostic(data.id, [...(data.diagnostic ? [data.diagnostic] : []), ...staticDiagnostics(data.id)]);
+    if (!markdownSections.hidden.has(data.id)) {
+      editorApi.mount({
+        id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS, symbols: () => symbolsBefore(data.id), connections: projectContext.connections,
+        onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id), onInspect: ({ code, pos }) => inspectInDssKernel(activeNotebook(), code, pos), onComplete: ({ code, pos }) => completeInDssKernel(activeNotebook(), code, pos),
+      });
+      editorApi.setDiagnostic(data.id, [...(data.diagnostic ? [data.diagnostic] : []), ...staticDiagnostics(data.id)]);
+    }
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
-    if (headingLevel && (state.collapsedHeadings.has(data.id) || data.collapsed)) collapsedAtLevel = headingLevel;
   });
   renderToolbar(); renderOutline();
   hydrateRichMime(cellsEl).catch(error => console.warn('Could not hydrate rich outputs.', error));
@@ -723,14 +732,9 @@ function renderToolbar() {
 }
 function renderOutline() {
   const list = document.querySelector('#outline-list');
-  const headings = state.cells.flatMap(cell => cell.type === 'markdown'
-    ? cell.source.split('\n').flatMap(line => {
-      const match = line.match(/^(#{1,3})\s+(.+)/);
-      return match ? [{ id: cell.id, level: match[1].length, title: match[2] }] : [];
-    })
-    : []);
+  const headings = sectionModel(state.cells).headings;
   list.innerHTML = headings.length
-    ? headings.map(heading => `<button class="outline-item level-${heading.level}" data-outline-id="${heading.id}"><span class="outline-section-toggle" data-collapse-heading="${heading.id}">${state.collapsedHeadings.has(heading.id) || getCell(heading.id)?.collapsed ? '›' : '⌄'}</span>${escapeHTML(heading.title)}</button>`).join('')
+    ? headings.map(heading => `<button class="outline-item level-${heading.level}" data-outline-id="${heading.cellId}"><span class="outline-section-toggle" data-collapse-heading="${heading.cellId}">${getCell(heading.cellId)?.collapsed ? '›' : '⌄'}</span>${escapeHTML(heading.title)}</button>`).join('')
     : '<p class="outline-empty">Add Markdown headings to build an outline.</p>';
 }
 function renderNotebookNavigation() {
@@ -920,6 +924,14 @@ async function runRelative(id, direction) {
   for (const cell of range) if (!await runCell(cell.id)) break;
 }
 function clearCellOutput(id) { const cell = getCell(id); if (!cell) return; cell.output = ''; cell.meta = ''; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; save(); renderCells(); }
+function toggleSection(id, collapsed = null) {
+  const cell = getCell(id);
+  if (!cell || cell.type !== 'markdown' || !sectionModel(state.cells).sections.has(id)) return;
+  cell.collapsed = collapsed == null ? !cell.collapsed : Boolean(collapsed);
+  if (cell.collapsed) state.collapsedHeadings.add(id); else state.collapsedHeadings.delete(id);
+  save(false);
+  renderCells();
+}
 async function restartKernel() {
   if (!dss.kernel) { setSavedState('Kernel will start when you run a cell'); return; }
   try { await jupyterRequest(`api/kernels/${encodeURIComponent(dss.kernel.kernelId)}/restart`, { method: 'POST', body: '{}' }); dss.kernel.socket.close(); dss.kernel = null; setKernelStatus('Restarted', 'idle'); setSavedState('Kernel restarted'); }
@@ -934,6 +946,7 @@ cellsEl.addEventListener('change', event => { if (event.target.matches('.cell-ch
 cellsEl.addEventListener('click', event => {
   const cell = event.target.closest('.cell'); if (!cell) return; const id = cell.dataset.id;
   setActiveCell(id);
+  if (event.target.closest('[data-toggle-section]')) { toggleSection(id); return; }
   if (event.target.closest('.run-cell')) {
     const current = getCell(id);
     if (current.running) interruptDssExecution().catch(error => setSavedState(`Interrupt failed: ${error.message}`, true));
@@ -949,10 +962,10 @@ cellsEl.addEventListener('click', event => {
   if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
   const typeOption = event.target.closest('[data-cell-type]');
   if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); queuePythonCheck(target); renderCells(); }
-  if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.querySelector('.code-editor').classList.add('editing'); focusCell(id); }
+  if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.classList.add('markdown-editing'); cell.querySelector('.code-editor').classList.add('editing'); focusCell(id); }
 });
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
-cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
+cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').classList.remove('markdown-editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
 cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter, newCell(button.dataset.insertType)); });
 cellsEl.addEventListener('dragstart', event => {
   const handle = event.target.closest('.drag-handle'); const cell = handle?.closest('.cell');
@@ -1006,7 +1019,7 @@ document.querySelector('#notebook-actions-menu')?.addEventListener('click', asyn
   if (action === 'run-below' && state.activeCellId) runRelative(state.activeCellId, 'below');
   if (action === 'clear-outputs') { state.cells.forEach(cell => { cell.output = ''; cell.meta = ''; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; }); save(); renderCells(); }
   if (action === 'restart-kernel') restartKernel();
-  if (action === 'collapse-all') { state.cells.filter(cell => cell.type === 'markdown' && /^#{1,3}\s/.test(cell.source)).forEach(cell => { cell.collapsed = true; state.collapsedHeadings.add(cell.id); }); save(false); renderCells(); }
+  if (action === 'collapse-all') { const sections = sectionModel(state.cells); state.cells.filter(cell => sections.sections.get(cell.id)?.collapsedCount).forEach(cell => { cell.collapsed = true; state.collapsedHeadings.add(cell.id); }); save(false); renderCells(); }
   if (action === 'expand-all') { state.cells.forEach(cell => { cell.collapsed = false; }); state.collapsedHeadings.clear(); save(false); renderCells(); }
 });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
@@ -1123,7 +1136,7 @@ document.querySelector('#folder-form').addEventListener('submit', event => { eve
 document.querySelector('#outline-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('outline-collapsed'));
 document.querySelector('#outline-list').addEventListener('click', event => {
   const collapsed = event.target.closest('[data-collapse-heading]');
-  if (collapsed) { const id = collapsed.dataset.collapseHeading; const cell = getCell(id); cell.collapsed = !cell.collapsed; cell.collapsed ? state.collapsedHeadings.add(id) : state.collapsedHeadings.delete(id); save(false); renderCells(); return; }
+  if (collapsed) { toggleSection(collapsed.dataset.collapseHeading); return; }
   document.querySelector(`[data-id="${event.target.closest('[data-outline-id]')?.dataset.outlineId}"]`)?.scrollIntoView({ behavior:'smooth', block:'center' });
 });
 document.querySelector('#dismiss-notice').addEventListener('click', event => event.target.closest('.notice').remove());

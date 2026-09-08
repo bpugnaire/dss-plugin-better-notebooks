@@ -208,3 +208,69 @@ button { cursor: pointer; }
 .recovery-diff { margin:10px 0 18px; font-size:11px; color:#4b615b; }.recovery-diff summary { cursor:pointer; font-weight:700; }.recovery-diff ul { max-height:180px; overflow:auto; padding-left:18px; line-height:1.65; }.recovery-modal-card footer { display:flex; justify-content:flex-end; gap:8px; }
 .cell.dragging { opacity:.72; }
 .cell-drag-preview { box-shadow:0 16px 34px rgba(15,48,46,.22); border-radius:7px; }
+
+/* Rendered Markdown belongs to the notebook document, rather than looking like
+   another code card. Clicking the content still opens the full cell editor. */
+.cell.markdown-display:not(.markdown-editing) { margin-top:14px; }
+.cell.markdown-display:not(.markdown-editing) .cell-content,
+.cell.markdown-display:not(.markdown-editing):hover .cell-content,
+.cell.markdown-display:not(.markdown-editing).active .cell-content,
+.cell.markdown-display:not(.markdown-editing).selected .cell-content {
+  overflow:visible;
+  border-color:transparent;
+  border-radius:0;
+  background:transparent;
+  box-shadow:none;
+}
+.cell.markdown-display:not(.markdown-editing) .cell-header { display:none; }
+.cell.markdown-display:not(.markdown-editing) .cell-output { background:transparent; }
+.cell.markdown-display:not(.markdown-editing) .markdown-render {
+  min-height:0;
+  padding:5px 4px 3px;
+  border-radius:0;
+  background:transparent;
+}
+.cell.markdown-display:not(.markdown-editing) .cell-rail {
+  right:4px;
+  left:auto;
+  top:5px;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .12s ease;
+}
+.cell.markdown-display:not(.markdown-editing):hover .cell-rail,
+.cell.markdown-display:not(.markdown-editing):focus-within .cell-rail,
+.cell.markdown-display:not(.markdown-editing).selected .cell-rail { opacity:1; pointer-events:auto; }
+.markdown-heading { position:relative; display:flex; align-items:center; gap:7px; }
+.markdown-fold {
+  position:absolute;
+  z-index:2;
+  left:-25px;
+  top:50%;
+  display:grid;
+  place-items:center;
+  width:20px;
+  height:20px;
+  padding:0;
+  transform:translateY(-50%);
+  border:0;
+  border-radius:4px;
+  background:transparent;
+  color:#75847f;
+  font:700 16px/1 Manrope,sans-serif;
+  cursor:pointer;
+}
+.markdown-fold:hover { background:#e7f8f0; color:#176447; }
+.markdown-fold-spacer { display:none; }
+.collapsed-section-summary {
+  margin:6px 0 2px;
+  padding:4px 9px;
+  border:1px solid #cfe8dc;
+  border-radius:999px;
+  background:#f3fbf7;
+  color:#39705d;
+  font:600 10px/1.2 Manrope,sans-serif;
+  cursor:pointer;
+}
+.collapsed-section-summary:hover { border-color:#73e6b4; background:#e7f8f0; color:#176447; }
+.cell.markdown-display.markdown-editing .cell-content { border-color:#73c9a7; box-shadow:0 0 0 2px rgba(115,230,180,.13); }

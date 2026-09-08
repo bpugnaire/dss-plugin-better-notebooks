@@ -4,7 +4,7 @@
   "scripts": {
     "build:webapp": "esbuild webapps/better-notebooks/app-runtime.js --bundle --format=iife --minify --target=es2020 --outfile=webapps/better-notebooks/app.js",
     "build:editor": "pnpm run build:webapp",
-    "test:smoke": "node tests/webapp-smoke.mjs && node tests/recovery-drafts.test.mjs"
+    "test:smoke": "node tests/webapp-smoke.mjs && node tests/recovery-drafts.test.mjs && node tests/markdown-sections.test.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.0",
