@@ -38,7 +38,7 @@ const starterCells = [
   { id: crypto.randomUUID(), type: 'python', source: '# Try a quick check\ncustomers.isna().sum().sort_values(ascending=False).head(10)', meta: '' },
 ];
 
-const state = { notebooks: loadNotebooks(), activeNotebookId: null, notebookListMode: 'all', cells: [], selected: new Set(), clipboard: [], dragId: null, activeCellId: null, history: [], historyIndex: -1, collapsedHeadings: new Set(), searchQuery: '', searchIndex: 0 };
+const state = { notebooks: loadNotebooks(), activeNotebookId: null, notebookListMode: 'all', cells: [], selected: new Set(), clipboard: [], dragId: null, dragIds: [], activeCellId: null, history: [], historyIndex: -1, collapsedHeadings: new Set(), searchQuery: '', searchIndex: 0 };
 const execution = { runningAll: false, stopRequested: false };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
@@ -95,10 +95,16 @@ function persistNotebooks() {
     : notebook);
   localStorage.setItem(storageKey('notebooks'), JSON.stringify({ ...state.notebooks, notebooks }));
 }
+function draftKey(notebook = activeNotebook()) { return storageKey(`draft-${notebook?.id || 'none'}`); }
+function persistDraft(notebook = activeNotebook()) {
+  if (notebook) localStorage.setItem(draftKey(notebook), JSON.stringify({ savedAt: Date.now(), cells: state.cells }));
+}
+function clearDraft(notebook = activeNotebook()) { if (notebook) localStorage.removeItem(draftKey(notebook)); }
 function save(recordHistory = true) {
   const notebook = activeNotebook();
   notebook.cells = state.cells; notebook.updatedAt = Date.now(); state.notebooks.activeNotebookId = state.activeNotebookId;
   if (!notebook.remote) persistNotebooks();
+  persistDraft(notebook);
   if (recordHistory) {
     const snapshot = JSON.stringify(state.cells);
     if (state.history[state.historyIndex] !== snapshot) {
@@ -204,6 +210,13 @@ function handleJupyterMessage(event) {
     }
     return;
   }
+  if (request.kind === 'complete') {
+    if (message.header?.msg_type === 'complete_reply') {
+      clearTimeout(request.timeout); kernel.pending.delete(message.parent_header?.msg_id);
+      request.resolve({ matches: message.content?.matches || [], cursorStart: message.content?.cursor_start });
+    }
+    return;
+  }
   const output = jupyterOutput(message);
   if (output) { request.outputs.push(output); request.onOutput?.(request.outputs); }
   if (message.header?.msg_type === 'execute_reply') {
@@ -282,6 +295,16 @@ async function inspectInDssKernel(notebook, code, cursorPos) {
     kernel.socket.send(JSON.stringify({ ...message, channel: 'shell' }));
   });
 }
+async function completeInDssKernel(notebook, code, cursorPos) {
+  const kernel = dss.kernel;
+  if (!kernel || kernel.notebookId !== notebook.id || kernel.socket.readyState !== WebSocket.OPEN) return { matches: [] };
+  const message = jupyterMessage('complete_request', { code, cursor_pos: cursorPos }, kernel.sessionId);
+  return new Promise(resolve => {
+    const timeout = setTimeout(() => { kernel.pending.delete(message.header.msg_id); resolve({ matches: [] }); }, 1400);
+    kernel.pending.set(message.header.msg_id, { kind: 'complete', resolve, timeout });
+    kernel.socket.send(JSON.stringify({ ...message, channel: 'shell' }));
+  });
+}
 async function interruptDssExecution() {
   if (!dss.kernel?.kernelId) return;
   setKernelStatus('Interrupting…', 'busy');
@@ -308,6 +331,7 @@ function dssDocumentFor(notebook) {
     const metadata = { ...(cell.dssCell?.metadata || {}) };
     if (cell.type === 'sql') metadata.betterNotebooks = { ...(metadata.betterNotebooks || {}), cellType: 'sql' };
     else if (metadata.betterNotebooks?.cellType === 'sql') delete metadata.betterNotebooks.cellType;
+    if (cell.type === 'markdown') metadata.betterNotebooks = { ...(metadata.betterNotebooks || {}), collapsed: Boolean(cell.collapsed) };
     return {
       ...(cell.dssCell || {}), metadata, cell_type: cell.type === 'markdown' ? 'markdown' : 'code',
       source: sourceLines(cell.source), execution_count: cell.dssCell?.execution_count ?? null,
@@ -321,6 +345,7 @@ async function saveDssNotebook(notebook) {
     method: 'PUT', body: JSON.stringify({ notebook: dssDocumentFor(notebook) }),
   });
   notebook.dssContent = payload.notebook;
+  clearDraft(notebook);
 }
 function queueDssSave(notebook) {
   clearTimeout(dssSaveTimer); setSavedState('Saving to DSS…');
@@ -342,7 +367,7 @@ function queuePythonCheck(cell) {
       const result = await dssRequest('python-check', { method: 'POST', body: JSON.stringify({ source: cell.source }) });
       cell.diagnostic = result.valid ? null : result;
     } catch (error) { cell.diagnostic = { message: 'Syntax check unavailable' }; }
-    BetterNotebookEditor.setDiagnostic(cell.id, cell.diagnostic);
+    BetterNotebookEditor.setDiagnostic(cell.id, [...(cell.diagnostic ? [cell.diagnostic] : []), ...staticDiagnostics(cell.id)]);
     const diagnostic = document.querySelector(`[data-id="${cell.id}"] .cell-diagnostic`);
     if (diagnostic) { diagnostic.hidden = !cell.diagnostic; diagnostic.textContent = cell.diagnostic ? `Line ${cell.diagnostic.line || '?'}: ${cell.diagnostic.message}` : ''; }
   }, 500));
@@ -354,6 +379,7 @@ function cellsFromDss(raw) {
     source: sourceText(cell.source),
     meta: cell.execution_count ? `Previously run · #${cell.execution_count}` : '',
     output: cell.outputs?.length ? { outputs: cell.outputs } : '',
+    collapsed: Boolean(cell.metadata?.betterNotebooks?.collapsed),
     dssCell: cell,
   }));
 }
@@ -376,6 +402,10 @@ async function loadDssNotebook(notebook) {
   notebook.loaded = true;
   notebook.language = 'PYTHON';
   notebook.runtimeId = runtimeIdFor(payload.notebook.metadata?.kernelspec);
+  try {
+    const draft = JSON.parse(localStorage.getItem(draftKey(notebook)) || 'null');
+    if (draft?.cells?.length && window.confirm(`A local recovery draft from ${new Date(draft.savedAt).toLocaleString()} is available for “${notebook.name}”. Restore it?`)) notebook.cells = draft.cells;
+  } catch { /* Ignore malformed local recovery data. */ }
 }
 async function loadDssWorkspace() {
   if (!isDssWebappRuntime()) return;
@@ -472,6 +502,39 @@ function symbolsBefore(cellId) {
   });
   return [...symbols.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
+function staticDiagnostics(cellId) {
+  const cell = getCell(cellId); if (!cell || cell.type !== 'python') return [];
+  const known = new Set(symbolsBefore(cellId).map(item => item.name));
+  const builtin = new Set(['True', 'False', 'None', 'print', 'len', 'range', 'list', 'dict', 'set', 'str', 'int', 'float', 'sum', 'min', 'max', 'enumerate', 'zip']);
+  const declared = new Set(); const findings = [];
+  cell.source.split('\n').forEach((line, index) => {
+    const assignment = line.match(/^\s*([A-Za-z_]\w*)\s*=/); if (assignment) declared.add(assignment[1]);
+    const imported = line.match(/^\s*import\s+([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?/); if (imported) declared.add(imported[2] || imported[1]);
+    const fromImport = line.match(/^\s*from\s+\S+\s+import\s+(.+)/); if (fromImport) fromImport[1].split(',').forEach(name => declared.add(name.trim().split(/\s+as\s+/).pop()));
+    const functionDef = line.match(/^\s*(?:def|class)\s+([A-Za-z_]\w*)/); if (functionDef) declared.add(functionDef[1]);
+    const words = line.replace(/(['"]).*?\1/g, '').match(/\b[A-Za-z_]\w*\b/g) || [];
+    words.forEach(word => {
+      if (known.has(word) || declared.has(word) || builtin.has(word) || /^(import|from|as|def|class|return|for|in|if|else|elif|while|and|or|not|is|with|try|except|pass|lambda|yield|await|async)$/i.test(word)) return;
+      if (/^[A-Z]/.test(word) || line.includes(`.${word}`)) return;
+      if (!findings.some(item => item.line === index + 1 && item.message.includes(word))) findings.push({ line: index + 1, column: line.indexOf(word) + 1, severity: 'warning', message: `“${word}” is not defined in an earlier cell` });
+    });
+  });
+  return findings.slice(0, 6);
+}
+function formatCellSource(cell) {
+  if (cell.type === 'sql') return cell.source.replace(/\s+/g, ' ').replace(/\b(select|from|where|group by|order by|limit|join|left join|inner join)\b/gi, value => value.toUpperCase()).replace(/\s+(FROM|WHERE|GROUP BY|ORDER BY|LIMIT|JOIN|LEFT JOIN|INNER JOIN)\s+/g, '\n$1 ');
+  if (cell.type === 'python') return cell.source.split('\n').map(line => line.replace(/\s+$/g, '').replace(/^\t+/g, tabs => '  '.repeat(tabs.length))).join('\n').replace(/\n{3,}/g, '\n\n');
+  return cell.source;
+}
+function notebookDocument() { return dssDocumentFor(activeNotebook()); }
+function downloadNotebook(extension, contents, mime) {
+  const anchor = document.createElement('a'); anchor.href = URL.createObjectURL(new Blob([contents], { type: mime })); anchor.download = `${activeNotebook().name.replace(/[^\w.-]+/g, '_')}.${extension}`; anchor.click(); setTimeout(() => URL.revokeObjectURL(anchor.href), 0);
+}
+function exportNotebook(kind) {
+  if (kind === 'ipynb') return downloadNotebook('ipynb', JSON.stringify(notebookDocument(), null, 2), 'application/x-ipynb+json');
+  const python = state.cells.map(cell => cell.type === 'markdown' ? cell.source.split('\n').map(line => `# ${line}`).join('\n') : cell.type === 'sql' ? `# %% SQL\n${cell.source}` : `# %%\n${cell.source}`).join('\n\n');
+  downloadNotebook('py', python, 'text/x-python');
+}
 
 function linkedDatasets() {
   const source = state.cells.map(cell => cell.source || '').join('\n');
@@ -555,7 +618,8 @@ function outputMarkup(kind, cellId = '') {
       }
       flushStream();
       if (output.output_type === 'error') {
-        rendered.push(`<pre class="runtime-output error-output">${escapeHTML(outputText([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n')))}</pre>`);
+        const fullError = outputText([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n'));
+        rendered.push(`<section class="error-output"><header><strong>${escapeHTML(output.ename || 'Execution error')}</strong><span>${escapeHTML(output.evalue || '')}</span><button data-copy-error="${escapeHTML(cellId)}-${outputIndex}">Copy error</button></header><details><summary>Show traceback</summary><pre class="runtime-output">${escapeHTML(fullError)}</pre></details><textarea class="error-copy-source" hidden>${escapeHTML(fullError)}</textarea></section>`);
         return;
       }
       const dataframe = dataframeMarkup(output.data?.['text/html'], cellId);
@@ -654,11 +718,11 @@ function renderCells() {
     cellsEl.appendChild(node);
     editorApi.mount({
       id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS, symbols: () => symbolsBefore(data.id), connections: projectContext.connections,
-      onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id), onInspect: ({ code, pos }) => inspectInDssKernel(activeNotebook(), code, pos),
+      onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id), onInspect: ({ code, pos }) => inspectInDssKernel(activeNotebook(), code, pos), onComplete: ({ code, pos }) => completeInDssKernel(activeNotebook(), code, pos),
     });
-    editorApi.setDiagnostic(data.id, data.diagnostic);
+    editorApi.setDiagnostic(data.id, [...(data.diagnostic ? [data.diagnostic] : []), ...staticDiagnostics(data.id)]);
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
-    if (headingLevel && state.collapsedHeadings.has(data.id)) collapsedAtLevel = headingLevel;
+    if (headingLevel && (state.collapsedHeadings.has(data.id) || data.collapsed)) collapsedAtLevel = headingLevel;
   });
   renderToolbar(); renderOutline();
   hydrateRichMime(cellsEl).catch(error => console.warn('Could not hydrate rich outputs.', error));
@@ -683,7 +747,7 @@ function renderOutline() {
     })
     : []);
   list.innerHTML = headings.length
-    ? headings.map(heading => `<button class="outline-item level-${heading.level}" data-outline-id="${heading.id}"><span class="outline-section-toggle" data-collapse-heading="${heading.id}">${state.collapsedHeadings.has(heading.id) ? '›' : '⌄'}</span>${escapeHTML(heading.title)}</button>`).join('')
+    ? headings.map(heading => `<button class="outline-item level-${heading.level}" data-outline-id="${heading.id}"><span class="outline-section-toggle" data-collapse-heading="${heading.id}">${state.collapsedHeadings.has(heading.id) || getCell(heading.id)?.collapsed ? '›' : '⌄'}</span>${escapeHTML(heading.title)}</button>`).join('')
     : '<p class="outline-empty">Add Markdown headings to build an outline.</p>';
 }
 function renderNotebookNavigation() {
@@ -824,7 +888,24 @@ function duplicateSelected() { const selection = state.cells.filter(cell => stat
 function copySelected(remove = false) { const selected = state.cells.filter(cell => state.selected.has(cell.id)); if (!selected.length) return; state.clipboard = selected.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); if (remove) { state.cells = state.cells.filter(cell => !state.selected.has(cell.id)); state.selected.clear(); } save(); renderCells(); }
 function pasteCells(afterId) { if (!state.clipboard.length) return; const cells = state.clipboard.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); const index = afterId ? cellIndex(afterId) + 1 : state.cells.length; state.cells.splice(index, 0, ...cells); state.selected = new Set(cells.map(cell => cell.id)); save(); renderCells(); }
 function deleteSelected() { if (!state.selected.size) return; state.cells = state.cells.filter(cell => !state.selected.has(cell.id)); state.selected.clear(); save(); renderCells(); }
-function moveCell(dragId, targetId) { if (dragId === targetId) return; const from = cellIndex(dragId); const to = cellIndex(targetId); const [moved] = state.cells.splice(from, 1); state.cells.splice(from < to ? to - 1 : to, 0, moved); save(); renderCells(); }
+function moveCells(dragIds, targetId, after = false) {
+  const ids = [...new Set(dragIds)].filter(id => getCell(id)); if (!ids.length || ids.includes(targetId)) return;
+  const moving = state.cells.filter(cell => ids.includes(cell.id));
+  const targetIndex = cellIndex(targetId); const before = state.cells.slice(0, targetIndex + (after ? 1 : 0)).filter(cell => !ids.includes(cell.id));
+  const rest = state.cells.slice(targetIndex + (after ? 1 : 0)).filter(cell => !ids.includes(cell.id));
+  state.cells = [...before, ...moving, ...rest]; save(); renderCells();
+}
+function moveCell(dragId, targetId) { moveCells([dragId], targetId); }
+async function runRelative(id, direction) {
+  const index = cellIndex(id); const range = direction === 'above' ? state.cells.slice(0, index + 1) : state.cells.slice(index);
+  for (const cell of range) if (!await runCell(cell.id)) break;
+}
+function clearCellOutput(id) { const cell = getCell(id); if (!cell) return; cell.output = ''; cell.meta = ''; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; save(); renderCells(); }
+async function restartKernel() {
+  if (!dss.kernel) { setSavedState('Kernel will start when you run a cell'); return; }
+  try { await jupyterRequest(`api/kernels/${encodeURIComponent(dss.kernel.kernelId)}/restart`, { method: 'POST', body: '{}' }); dss.kernel.socket.close(); dss.kernel = null; setKernelStatus('Restarted', 'idle'); setSavedState('Kernel restarted'); }
+  catch (error) { setSavedState(`Kernel restart failed: ${error.message}`, true); }
+}
 
 cellsEl.addEventListener('input', event => {
   if (!event.target.matches('.code-input')) return;
@@ -840,6 +921,12 @@ cellsEl.addEventListener('click', event => {
     else runCell(id);
   }
   if (event.target.closest('.delete-cell')) { state.selected = new Set([id]); deleteSelected(); }
+  if (event.target.closest('.more-cell')) cell.classList.toggle('more-open');
+  const action = event.target.closest('[data-cell-action]')?.dataset.cellAction;
+  if (action === 'run-above') runRelative(id, 'above');
+  if (action === 'run-below') runRelative(id, 'below');
+  if (action === 'clear-output') clearCellOutput(id);
+  if (action === 'format') { const target = getCell(id); target.source = formatCellSource(target); save(); renderCells(); focusCell(id, true); }
   if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
   const typeOption = event.target.closest('[data-cell-type]');
   if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); queuePythonCheck(target); renderCells(); }
@@ -848,11 +935,11 @@ cellsEl.addEventListener('click', event => {
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
 cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
 cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter, newCell(button.dataset.insertType)); });
-cellsEl.addEventListener('dragstart', event => { const cell = event.target.closest('.cell'); if (!cell || event.target.closest('.code-editor')) { event.preventDefault(); return; } state.dragId = cell.dataset.id; cell.classList.add('dragging'); });
-cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell && cell.dataset.id !== state.dragId) cell.classList.add('drop-target'); });
+cellsEl.addEventListener('dragstart', event => { const cell = event.target.closest('.cell'); if (!cell || !event.target.closest('.drag-handle')) { event.preventDefault(); return; } state.dragId = cell.dataset.id; state.dragIds = state.selected.has(cell.dataset.id) ? [...state.selected] : [cell.dataset.id]; state.dragIds.forEach(id => document.querySelector(`[data-id="${id}"]`)?.classList.add('dragging')); });
+cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (!cell || state.dragIds.includes(cell.dataset.id)) return; const bounds = cell.getBoundingClientRect(); cell.classList.toggle('drop-after', event.clientY > bounds.top + bounds.height / 2); cell.classList.add('drop-target'); if (event.clientY < 85) window.scrollBy({ top: -18 }); if (event.clientY > window.innerHeight - 85) window.scrollBy({ top: 18 }); });
 cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.classList.remove('drop-target'));
-cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCell(state.dragId, cell.dataset.id); });
-cellsEl.addEventListener('dragend', () => { state.dragId = null; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target')); });
+cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCells(state.dragIds, cell.dataset.id, cell.classList.contains('drop-after')); });
+cellsEl.addEventListener('dragend', () => { state.dragId = null; state.dragIds = []; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target', 'drop-after')); });
 
 function renderExecutionControls() {
   document.querySelector('#run-all').disabled = execution.runningAll;
@@ -872,6 +959,20 @@ document.querySelector('#run-all').addEventListener('click', async () => {
   execution.runningAll = false; renderExecutionControls();
 });
 document.querySelector('#stop-run-all').addEventListener('click', () => { execution.stopRequested = true; setSavedState('Stopping after the current cell…'); });
+document.querySelector('#notebook-actions').addEventListener('click', () => document.querySelector('#notebook-actions-menu').classList.toggle('hidden'));
+document.querySelector('#notebook-actions-menu').addEventListener('click', async event => {
+  const action = event.target.dataset.notebookAction; if (!action) return;
+  document.querySelector('#notebook-actions-menu').classList.add('hidden');
+  if (action === 'export-ipynb') exportNotebook('ipynb');
+  if (action === 'export-py') exportNotebook('py');
+  if (action === 'copy-python') { await navigator.clipboard?.writeText(state.cells.filter(cell => cell.type !== 'markdown').map(cell => cell.source).join('\n\n# %%\n\n')); setSavedState('Python cells copied'); }
+  if (action === 'run-above' && state.activeCellId) runRelative(state.activeCellId, 'above');
+  if (action === 'run-below' && state.activeCellId) runRelative(state.activeCellId, 'below');
+  if (action === 'clear-outputs') { state.cells.forEach(cell => { cell.output = ''; cell.meta = ''; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; }); save(); renderCells(); }
+  if (action === 'restart-kernel') restartKernel();
+  if (action === 'collapse-all') { state.cells.filter(cell => cell.type === 'markdown' && /^#{1,3}\s/.test(cell.source)).forEach(cell => { cell.collapsed = true; state.collapsedHeadings.add(cell.id); }); save(false); renderCells(); }
+  if (action === 'expand-all') { state.cells.forEach(cell => { cell.collapsed = false; }); state.collapsedHeadings.clear(); save(false); renderCells(); }
+});
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#refresh-datasets').addEventListener('click', loadProjectContext);
 document.querySelector('#executor-selector').addEventListener('change', event => {
@@ -981,7 +1082,7 @@ document.querySelector('#folder-form').addEventListener('submit', event => { eve
 document.querySelector('#outline-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('outline-collapsed'));
 document.querySelector('#outline-list').addEventListener('click', event => {
   const collapsed = event.target.closest('[data-collapse-heading]');
-  if (collapsed) { const id = collapsed.dataset.collapseHeading; state.collapsedHeadings.has(id) ? state.collapsedHeadings.delete(id) : state.collapsedHeadings.add(id); renderCells(); return; }
+  if (collapsed) { const id = collapsed.dataset.collapseHeading; const cell = getCell(id); cell.collapsed = !cell.collapsed; cell.collapsed ? state.collapsedHeadings.add(id) : state.collapsedHeadings.delete(id); save(false); renderCells(); return; }
   document.querySelector(`[data-id="${event.target.closest('[data-outline-id]')?.dataset.outlineId}"]`)?.scrollIntoView({ behavior:'smooth', block:'center' });
 });
 document.querySelector('#dismiss-notice').addEventListener('click', event => event.target.closest('.notice').remove());
@@ -1027,6 +1128,7 @@ async function createDatasetFromDataframe(cellId) {
 }
 cellsEl.addEventListener('input', event => { const filter = event.target.closest('.dataframe-filter input'); if (filter) filterDataframe(filter.closest('.dataframe-output'), filter.value); });
 cellsEl.addEventListener('click', event => {
+  const copyError = event.target.closest('[data-copy-error]'); if (copyError) { const text = copyError.closest('.error-output')?.querySelector('.error-copy-source')?.value || ''; navigator.clipboard?.writeText(text); setSavedState('Error copied to clipboard'); return; }
   const header = event.target.closest('[data-sort-column]'); if (header) { sortDataframe(header.closest('table'), Number(header.dataset.sortColumn)); return; }
   const createDataset = event.target.closest('[data-create-dataset-from-cell]'); if (createDataset) { createDatasetFromDataframe(createDataset.dataset.createDatasetFromCell); return; }
   const chart = event.target.closest('.chart-dataframe'); if (chart) { chartDataframe(chart.closest('.dataframe-output')); return; }

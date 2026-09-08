@@ -65,7 +65,7 @@ function formatInspection(value, name) {
   return [signature || name, summary].filter(Boolean).join('\n\n');
 }
 
-function completionSource(type, datasets, symbols = [], connections = []) {
+function completionSource(type, datasets, symbols = [], connections = [], onComplete = null) {
   return context => {
     const word = context.matchBefore(/[\w.]*/);
     if (!context.explicit && (!word || word.from === word.to)) return null;
@@ -79,7 +79,13 @@ function completionSource(type, datasets, symbols = [], connections = []) {
     const options = type === 'sql'
       ? [...SQL_WORDS, ...datasetOptions, ...connectionOptions]
       : [...PYTHON_WORDS, ...symbolOptions, ...datasetOptions];
-    return { from: word ? word.from : context.pos, options, validFor: /[\w.]*/ };
+    if (!onComplete) return { from: word ? word.from : context.pos, options, validFor: /[\w.]*/ };
+    return Promise.resolve(onComplete({ code: context.state.doc.toString(), pos: context.pos, prefix: word?.text || '' }))
+      .then(remote => {
+        const remoteOptions = (remote?.matches || []).map(label => ({ label, type: 'variable', detail: 'Kernel suggestion' }));
+        const unique = new Map([...remoteOptions, ...options].map(option => [option.label, option]));
+        return { from: remote?.cursorStart ?? word?.from ?? context.pos, options: [...unique.values()], validFor: /[\w.]*/ };
+      }).catch(() => ({ from: word ? word.from : context.pos, options, validFor: /[\w.]*/ }));
   };
 }
 
@@ -133,14 +139,14 @@ function languageFor(type) {
   return python();
 }
 
-export function mount({ id, parent, source, type, datasets, symbols = [], connections = [], onChange, onRun, onRunAndAdvance, onInspect = null }) {
+export function mount({ id, parent, source, type, datasets, symbols = [], connections = [], onChange, onRun, onRunAndAdvance, onInspect = null, onComplete = null }) {
   const language = languageFor(type);
   const view = new EditorView({
     state: EditorState.create({
       doc: source,
       extensions: [
         history(), language, notebookLightTheme, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(),
-        autocompletion({ override: [completionSource(type, datasets, symbols, connections)], activateOnTyping: true, activateOnTypingDelay: 120 }), hoverFor(datasets, symbols, connections, onInspect),
+        autocompletion({ override: [completionSource(type, datasets, symbols, connections, onComplete)], activateOnTyping: true, activateOnTypingDelay: 120 }), hoverFor(datasets, symbols, connections, onInspect),
         linter(() => []),
         keymap.of([
           { key: 'Ctrl-Space', run: startCompletion },
@@ -166,11 +172,19 @@ export function setDiagnostic(id, diagnostic) {
   // Do not dispatch an empty lint update. With the bundled editor this is not
   // needed to clear a new editor and, on DSS's browser runtime, dispatching it
   // can abort the entire render loop after the first native notebook cell.
-  if (!diagnostic) return;
-  const line = Math.min(Math.max(diagnostic.line || 1, 1), view.state.doc.lines);
-  const from = Math.min(view.state.doc.line(line).from + Math.max((diagnostic.column || 1) - 1, 0), view.state.doc.length);
-  const diagnostics = [{ from, to: Math.min(from + 1, view.state.doc.length), severity: 'error', message: diagnostic.message || 'Syntax error' }];
+  const all = Array.isArray(diagnostic) ? diagnostic : diagnostic ? [diagnostic] : [];
+  const diagnostics = all.map(item => {
+    const line = Math.min(Math.max(item.line || 1, 1), view.state.doc.lines);
+    const from = Math.min(view.state.doc.line(line).from + Math.max((item.column || 1) - 1, 0), view.state.doc.length);
+    return { from, to: Math.min(from + Math.max(item.length || 1, 1), view.state.doc.length), severity: item.severity || 'error', message: item.message || 'Diagnostic' };
+  });
   view.dispatch({ effects: setDiagnostics(view.state, diagnostics) });
+}
+
+export function replaceSource(id, source) {
+  const view = editors.get(id); if (!view) return;
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
+  view.focus();
 }
 
 export function focus(id, preventScroll = false) {

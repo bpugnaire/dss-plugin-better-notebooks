@@ -196,3 +196,12 @@ button { cursor: pointer; }
 .data-panel-toggle::before { height:100%; font-size:22px; }
 .data-panel-toggle[aria-pressed="true"] { right:0; }
 @media (max-width:1050px) { .notebook-runbar { width:calc(100% - 30px); } }
+
+/* Phase 0–4 workflow controls */
+.notebook-actions-menu { position:fixed; z-index:30; top:74px; right:calc(var(--right-panel-width, 260px) + 18px); display:grid; min-width:180px; padding:5px; background:#fff; border:1px solid #d9e6df; border-radius:7px; box-shadow:0 12px 30px rgba(15,48,46,.16); }
+.notebook-actions-menu button,.cell-more-menu button { border:0; background:transparent; color:#30504a; text-align:left; font:600 11px Manrope,sans-serif; padding:7px 9px; border-radius:4px; }
+.notebook-actions-menu button:hover,.cell-more-menu button:hover { background:#eafaf2; }.notebook-actions-menu hr { width:100%; border:0; border-top:1px solid #e8efeb; }
+.cell-actions { position:relative; }.cell-more-menu { display:none; position:absolute; z-index:12; right:0; top:24px; min-width:135px; padding:4px; background:#fff; border:1px solid #d9e6df; border-radius:6px; box-shadow:0 9px 24px rgba(15,48,46,.16); }.cell.more-open .cell-more-menu { display:grid; }
+.cell.drop-target .cell-content { box-shadow:0 -3px 0 #73e6b4; }.cell.drop-target.drop-after .cell-content { box-shadow:0 3px 0 #73e6b4; }
+.cell.running .execution-meta-top::before { content:' '; }.execution-meta-top.error { color:#bd4a41; }
+.error-output { background:#fff8f7; border-top:1px solid #f2dfdc; color:#a23e36; }.error-output header { min-height:34px; display:flex; align-items:center; gap:8px; padding:0 14px; font-size:10px; }.error-output header span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.error-output header button { margin-left:auto; border:1px solid #f0cbc5; background:#fff; color:#a23e36; border-radius:4px; padding:4px 6px; font-size:9px; }.error-output details { padding:0 14px 10px; }.error-output summary { cursor:pointer; font-size:10px; }.error-output .runtime-output { margin:7px 0 0; border:1px solid #f1dfdc; max-height:260px; }
