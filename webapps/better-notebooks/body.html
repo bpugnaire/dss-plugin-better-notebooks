@@ -46,9 +46,19 @@
         <section class="notebook-runbar" aria-label="Notebook execution controls">
           <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill" id="kernel-status" data-state="idle">● Idle</span><select class="executor-selector" id="executor-selector" aria-label="Python runtime"><option value="dss_builtin">DSS built-in Python</option></select><select class="executor-selector secondary" id="sql-executor-selector" aria-label="SQL connection"><option value="">SQL connection</option></select></div>
           <div class="head-actions">
-            <button class="button ghost" id="notebook-actions" title="Notebook actions" aria-label="Notebook actions">•••</button>
             <button class="button primary" id="run-all"><span>▶</span> Run all</button>
             <button class="button ghost hidden" id="stop-run-all"><span>■</span> Stop</button>
+            <button class="button ghost restart-kernel-button" id="restart-kernel-button" title="Restart kernel" aria-label="Restart kernel">⟳ Restart</button>
+            <button class="button ghost" id="notebook-actions" title="Notebook actions" aria-label="Notebook actions">•••</button>
+            <div class="notebook-actions-menu hidden" id="notebook-actions-menu" role="menu">
+              <button data-notebook-action="export-ipynb">Download .ipynb</button>
+              <button data-notebook-action="export-py">Download .py</button>
+              <button data-notebook-action="copy-python">Copy as Python</button>
+              <hr><button data-notebook-action="clear-outputs">Clear all outputs</button>
+              <button data-notebook-action="restart-kernel">Restart kernel</button>
+              <button data-notebook-action="collapse-all">Collapse all sections</button>
+              <button data-notebook-action="expand-all">Expand all sections</button>
+            </div>
           </div>
         </section>
         <section class="notebook-head">
@@ -82,16 +92,6 @@
           <div class="cell-minimap-tracks" id="cell-minimap-tracks"></div>
         </aside>
       </main>
-
-      <div class="notebook-actions-menu hidden" id="notebook-actions-menu" role="menu">
-        <button data-notebook-action="export-ipynb">Download .ipynb</button>
-        <button data-notebook-action="export-py">Download .py</button>
-        <button data-notebook-action="copy-python">Copy as Python</button>
-        <hr><button data-notebook-action="clear-outputs">Clear all outputs</button>
-        <button data-notebook-action="restart-kernel">Restart kernel</button>
-        <button data-notebook-action="collapse-all">Collapse all sections</button>
-        <button data-notebook-action="expand-all">Expand all sections</button>
-      </div>
 
       <button class="data-panel-toggle" id="data-panel-toggle" title="Hide project datasets" aria-label="Hide project datasets" aria-pressed="false">▱</button>
       <div class="panel-resizer panel-resizer-right" data-panel-resizer="right" role="separator" aria-orientation="vertical" aria-label="Resize project datasets"></div>

@@ -1167,6 +1167,7 @@ document.querySelector('#run-all').addEventListener('click', async () => {
 });
 document.querySelector('#stop-run-all').addEventListener('click', () => { execution.stopRequested = true; setSavedState('Stopping after the current cell…'); });
 document.querySelector('#notebook-actions')?.addEventListener('click', () => document.querySelector('#notebook-actions-menu')?.classList.toggle('hidden'));
+document.querySelector('#restart-kernel-button')?.addEventListener('click', () => restartKernel());
 document.querySelector('#notebook-actions-menu')?.addEventListener('click', async event => {
   const action = event.target.dataset.notebookAction; if (!action) return;
   document.querySelector('#notebook-actions-menu')?.classList.add('hidden');
@@ -1177,6 +1178,9 @@ document.querySelector('#notebook-actions-menu')?.addEventListener('click', asyn
   if (action === 'restart-kernel') restartKernel();
   if (action === 'collapse-all') { const sections = sectionModel(state.cells); state.cells.filter(cell => sections.sections.get(cell.id)?.collapsedCount).forEach(cell => { cell.collapsed = true; state.collapsedHeadings.add(cell.id); }); save(false); renderCells(); }
   if (action === 'expand-all') { state.cells.forEach(cell => { cell.collapsed = false; }); state.collapsedHeadings.clear(); save(false); renderCells(); }
+});
+document.addEventListener('click', event => {
+  if (!event.target.closest('#notebook-actions, #notebook-actions-menu')) document.querySelector('#notebook-actions-menu')?.classList.add('hidden');
 });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));
 document.querySelector('#refresh-datasets')?.addEventListener('click', loadProjectContext);
