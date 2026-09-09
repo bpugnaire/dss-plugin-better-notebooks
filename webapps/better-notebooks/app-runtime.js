@@ -933,6 +933,12 @@ async function restartKernel() {
   try { await jupyterRequest(`api/kernels/${encodeURIComponent(dss.kernel.kernelId)}/restart`, { method: 'POST', body: '{}' }); dss.kernel.socket.close(); dss.kernel = null; setKernelStatus('Restarted', 'idle'); setSavedState('Kernel restarted'); }
   catch (error) { setSavedState(`Kernel restart failed: ${error.message}`, true); }
 }
+function closeCellMenus() {
+  document.querySelectorAll('.cell.more-open, .cell.cell-menu-open').forEach(cell => {
+    cell.classList.remove('more-open', 'cell-menu-open');
+    cell.querySelector('.cell-type')?.classList.remove('open');
+  });
+}
 
 cellsEl.addEventListener('input', event => {
   if (!event.target.matches('.code-input')) return;
@@ -949,7 +955,11 @@ cellsEl.addEventListener('click', event => {
     else runCell(id);
   }
   if (event.target.closest('.delete-cell')) { state.selected = new Set([id]); deleteSelected(); }
-  if (event.target.closest('.more-cell')) { cell.classList.toggle('more-open'); cell.classList.remove('cell-menu-open'); }
+  if (event.target.closest('.more-cell')) {
+    const shouldOpen = !cell.classList.contains('more-open');
+    closeCellMenus();
+    cell.classList.toggle('more-open', shouldOpen);
+  }
   const action = event.target.closest('[data-cell-action]')?.dataset.cellAction;
   if (action === 'run-above') runRelative(id, 'above');
   if (action === 'run-below') runRelative(id, 'below');
@@ -957,13 +967,17 @@ cellsEl.addEventListener('click', event => {
   if (action === 'format') { const target = getCell(id); target.source = formatCellSource(target); save(); renderCells(); focusCell(id, true); }
   if (event.target.closest('.cell-type-selector')) {
     const typeMenu = cell.querySelector('.cell-type');
-    typeMenu.classList.toggle('open');
-    cell.classList.toggle('cell-menu-open', typeMenu.classList.contains('open'));
-    cell.classList.remove('more-open');
+    const shouldOpen = !typeMenu.classList.contains('open');
+    closeCellMenus();
+    typeMenu.classList.toggle('open', shouldOpen);
+    cell.classList.toggle('cell-menu-open', shouldOpen);
   }
   const typeOption = event.target.closest('[data-cell-type]');
   if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); queuePythonCheck(target); renderCells(); }
   if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.classList.add('markdown-editing'); cell.querySelector('.code-editor').classList.add('editing'); focusCell(id); }
+});
+document.addEventListener('click', event => {
+  if (!event.target.closest('.cell-type, .more-cell, .cell-more-menu')) closeCellMenus();
 });
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
 cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').classList.remove('markdown-editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
@@ -1226,7 +1240,7 @@ document.querySelector('#use-dss-version')?.addEventListener('click', () => {
 });
 document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
-  if (event.key === 'Escape') { closeSettings(); closeFolderModal(); closeDataframeModal(); return; }
+  if (event.key === 'Escape') { closeCellMenus(); closeSettings(); closeFolderModal(); closeDataframeModal(); return; }
   if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { if (event.target.closest?.('.cm-editor')) return; event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
   // A focused CodeMirror editor owns its own undo stack. Let it handle Cmd/Ctrl+Z
   // so the edit is undone in place and the cursor never leaves the cell.
