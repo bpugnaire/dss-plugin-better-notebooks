@@ -53,6 +53,7 @@ const starterCells = [
 const state = createNotebookState(loadNotebooks());
 const execution = { runningAll: false, stopRequested: false };
 const dragScroll = { frame: 0, pointerY: null, container: null };
+const pointerDrag = { active: false, candidate: null, preview: null, dropIndex: null };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
 
@@ -300,6 +301,11 @@ async function interruptDssExecution() {
   if (!dss.kernel?.kernelId) return;
   setKernelStatus('Interrupting…', 'busy');
   await jupyterRequest(`api/kernels/${encodeURIComponent(dss.kernel.kernelId)}/interrupt`, { method: 'POST', body: '{}' });
+  state.cells.filter(cell => executionState(cell).status === 'running').forEach(cell => {
+    cell.running = false;
+    setExecution(cell, { status: 'interrupted', finishedAt: Date.now(), durationMs: Date.now() - (executionState(cell).startedAt || Date.now()) });
+  });
+  save(); renderCells();
 }
 function setSavedState(message, isError = false) {
   const status = document.querySelector('#saved-state');
@@ -318,6 +324,44 @@ function outputText(value) {
   return sourceText(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
 }
 function sourceLines(source) { return source ? source.match(/[^\n]*\n|[^\n]+/g) || [] : []; }
+function executionState(cell) {
+  const existing = cell.execution || {};
+  if (existing.status) return existing;
+  const hasError = cell.output?.outputs?.some(output => output.output_type === 'error') || cell.dssCell?.outputs?.some(output => output.output_type === 'error');
+  if (cell.dssCell?.execution_count || cell.meta?.startsWith('Previously run') || cell.meta?.startsWith('Ran just now')) {
+    return { status: hasError ? 'failed' : 'succeeded', order: cell.dssCell?.execution_count || null, finishedAt: null, durationMs: null };
+  }
+  return { status: 'never', order: null, startedAt: null, finishedAt: null, durationMs: null };
+}
+function setExecution(cell, patch) { cell.execution = { ...executionState(cell), ...patch }; }
+function timeAgo(timestamp) {
+  if (!timestamp) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 5) return 'Ran just now';
+  if (seconds < 60) return `Ran ${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `Ran ${minutes}m ago`;
+  return `Ran ${new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+}
+function executionLabel(cell) {
+  const detail = executionState(cell);
+  if (detail.status === 'never') return '';
+  if (detail.status === 'queued') return 'Queued';
+  if (detail.status === 'running') return `Running · started ${new Date(detail.startedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+  if (detail.status === 'interrupted') return 'Interrupted';
+  const time = timeAgo(detail.finishedAt) || (detail.status === 'failed' ? 'Execution failed' : 'Previously run');
+  const duration = Number.isFinite(detail.durationMs) ? ` · ${(detail.durationMs / 1000).toFixed(2)}s` : '';
+  const order = detail.order ? ` · #${detail.order}` : '';
+  return `${time}${duration}${order}`;
+}
+function executionIcon(status) {
+  return status === 'succeeded' ? '✓' : status === 'failed' ? '✕' : status === 'interrupted' ? '■' : status === 'queued' ? '◌' : '';
+}
+function nextExecutionOrder() {
+  const seen = state.cells.reduce((maximum, cell) => Math.max(maximum, Number(executionState(cell).order) || 0), 0);
+  state.nextExecutionOrder = Math.max(state.nextExecutionOrder || 1, seen + 1);
+  return state.nextExecutionOrder++;
+}
 function dssDocumentFor(notebook) {
   const document = structuredClone(notebook.dssContent || { nbformat: 4, nbformat_minor: 5, metadata: {} });
   document.metadata = document.metadata || {};
@@ -325,6 +369,7 @@ function dssDocumentFor(notebook) {
   if (runtime?.kernelSpec) document.metadata.kernelspec = runtime.kernelSpec;
   document.cells = notebook.cells.map(cell => {
     const metadata = { ...(cell.dssCell?.metadata || {}) };
+    metadata.betterNotebooks = { ...(metadata.betterNotebooks || {}), execution: executionState(cell) };
     if (cell.type === 'sql') metadata.betterNotebooks = { ...(metadata.betterNotebooks || {}), cellType: 'sql' };
     else if (metadata.betterNotebooks?.cellType === 'sql') delete metadata.betterNotebooks.cellType;
     if (cell.type === 'markdown') metadata.betterNotebooks = { ...(metadata.betterNotebooks || {}), collapsed: Boolean(cell.collapsed) };
@@ -375,6 +420,7 @@ function cellsFromDss(raw) {
     source: sourceText(cell.source),
     meta: cell.execution_count ? `Previously run · #${cell.execution_count}` : '',
     output: cell.outputs?.length ? { outputs: cell.outputs } : '',
+    execution: cell.metadata?.betterNotebooks?.execution || (cell.execution_count ? { status: cell.outputs?.some(output => output.output_type === 'error') ? 'failed' : 'succeeded', order: cell.execution_count, startedAt: null, finishedAt: null, durationMs: null } : { status: 'never', order: null, startedAt: null, finishedAt: null, durationMs: null }),
     collapsed: Boolean(cell.metadata?.betterNotebooks?.collapsed),
     dssCell: cell,
   }));
@@ -485,7 +531,7 @@ async function loadProjectContext() {
 }
 function cellIndex(id) { return state.cells.findIndex(cell => cell.id === id); }
 function getCell(id) { return state.cells.find(cell => cell.id === id); }
-function newCell(type = 'python') { return { id: crypto.randomUUID(), type, source: type === 'markdown' ? '## New section' : type === 'sql' ? 'SELECT *\nFROM customers_enriched\nLIMIT 100' : '', meta: '' }; }
+function newCell(type = 'python') { return { id: crypto.randomUUID(), type, source: type === 'markdown' ? '## New section' : type === 'sql' ? 'SELECT *\nFROM customers_enriched\nLIMIT 100' : '', meta: '', execution: { status: 'never', order: null, startedAt: null, finishedAt: null, durationMs: null } }; }
 
 function symbolsBefore(cellId) {
   const symbols = new Map();
@@ -617,8 +663,9 @@ function outputMarkup(kind, cellId = '') {
       }
       flushStream();
       if (output.output_type === 'error') {
-        const fullError = outputText([`${output.ename || 'Error'}: ${output.evalue || ''}`, ...(output.traceback || [])].join('\n'));
-        rendered.push(`<section class="error-output"><header><strong>${escapeHTML(output.ename || 'Execution error')}</strong><span>${escapeHTML(output.evalue || '')}</span><button data-copy-error="${escapeHTML(cellId)}-${outputIndex}">Copy error</button></header><details><summary>Show traceback</summary><pre class="runtime-output">${escapeHTML(fullError)}</pre></details><textarea class="error-copy-source" hidden>${escapeHTML(fullError)}</textarea></section>`);
+        const summary = `${output.ename || 'Error'}: ${output.evalue || ''}`;
+        const fullError = outputText([summary, ...(output.traceback || [])].join('\n'));
+        rendered.push(`<section class="error-output"><header><div class="error-summary"><strong>${escapeHTML(output.ename || 'Execution error')}</strong><span>${escapeHTML(output.evalue || '')}</span></div><div class="error-copy-actions"><button data-copy-error-summary="${escapeHTML(cellId)}-${outputIndex}" title="Copy error summary" aria-label="Copy error summary"><i class="copy-icon" aria-hidden="true"></i></button><button data-copy-full-traceback="${escapeHTML(cellId)}-${outputIndex}" title="Copy full traceback"> <i class="copy-icon" aria-hidden="true"></i> Copy full traceback</button></div></header><details><summary>Show traceback</summary><pre class="runtime-output">${escapeHTML(fullError)}</pre></details><textarea class="error-summary-copy-source" hidden>${escapeHTML(summary)}</textarea><textarea class="error-traceback-copy-source" hidden>${escapeHTML(fullError)}</textarea></section>`);
         return;
       }
       const dataframe = dataframeMarkup(output.data?.['text/html'], cellId);
@@ -650,6 +697,25 @@ function updateRenderedRunState(cell) {
   const button = node.querySelector('.run-cell'); button.classList.toggle('is-running', Boolean(cell.running));
   button.title = cell.running ? 'Interrupt execution' : 'Run cell'; button.setAttribute('aria-label', button.title);
 }
+function renderCellMinimap() {
+  const tracks = document.querySelector('#cell-minimap-tracks');
+  if (!tracks) return;
+  tracks.innerHTML = state.cells.map((cell, index) => {
+    const detail = executionState(cell);
+    return `<button type="button" class="cell-minimap-track ${detail.status}" data-minimap-cell="${escapeHTML(cell.id)}" title="Cell ${index + 1}: ${escapeHTML(executionLabel(cell) || 'Never run')}"></button>`;
+  }).join('');
+  document.querySelector('#minimap-last-run')?.toggleAttribute('disabled', !state.cells.some(cell => executionState(cell).finishedAt || executionState(cell).order));
+  document.querySelector('#minimap-first-failed')?.toggleAttribute('disabled', !state.cells.some(cell => executionState(cell).status === 'failed'));
+}
+function refreshExecutionTimestamps() {
+  state.cells.forEach(cell => {
+    const detail = executionState(cell); const node = document.querySelector(`[data-id="${cell.id}"] .execution-meta-top`);
+    if (!node || !['succeeded', 'failed', 'interrupted'].includes(detail.status)) return;
+    const label = executionLabel(cell); const icon = executionIcon(detail.status);
+    node.textContent = label ? `${icon ? `${icon} ` : ''}${label}` : '';
+  });
+  renderCellMinimap();
+}
 function dataframeMarkup(html, cellId = '') {
   if (!html) return '';
   const document = new DOMParser().parseFromString(outputText(html), 'text/html');
@@ -677,10 +743,12 @@ function renderCells() {
     const node = template.content.firstElementChild.cloneNode(true);
     node.dataset.id = data.id; node.dataset.type = data.type; node.draggable = false;
     if (data.type === 'markdown') node.classList.add('markdown-display');
-    node.querySelector('.drag-handle').draggable = true;
+    node.querySelector('.drag-handle').draggable = false;
     if (state.selected.has(data.id)) node.classList.add('selected');
     if (state.activeCellId === data.id) node.classList.add('active');
-    if (data.running) node.classList.add('running');
+    const executionDetail = executionState(data);
+    if (executionDetail.status === 'running') node.classList.add('running');
+    node.dataset.executionStatus = executionDetail.status;
     if (markdownSections.hidden.has(data.id)) node.classList.add('section-hidden');
     if (section?.collapsedCount) {
       const collapseButton = node.querySelector('.section-collapse');
@@ -697,11 +765,16 @@ function renderCells() {
       ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}${data.collapsed && section?.collapsedCount ? `<button class="collapsed-section-summary" type="button" data-toggle-section="${escapeHTML(data.id)}">${section.collapsedCount} cell${section.collapsedCount === 1 ? '' : 's'} collapsed</button>` : ''}</div>`
       : outputMarkup(data.output, data.id);
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
-    const hasError = data.meta === 'Execution failed' || data.output?.outputs?.some(output => output.output_type === 'error');
-    const meta = node.querySelector('.execution-meta-top'); meta.textContent = data.meta ? `${hasError ? '✕' : '✓'} ${data.meta}` : ''; if (data.meta) meta.classList.add(hasError ? 'error' : 'success');
+    const meta = node.querySelector('.execution-meta-top');
+    const label = executionLabel(data); const icon = executionIcon(executionDetail.status);
+    meta.textContent = label ? `${icon ? `${icon} ` : ''}${label}` : '';
+    meta.dataset.executionStatus = executionDetail.status;
+    meta.classList.toggle('success', executionDetail.status === 'succeeded');
+    meta.classList.toggle('error', executionDetail.status === 'failed');
+    meta.classList.toggle('neutral', ['queued', 'running', 'interrupted'].includes(executionDetail.status));
     node.querySelector('.cell-footer').hidden = true;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
-    if (data.running) { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
+    if (executionDetail.status === 'running') { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
     cellsEl.appendChild(node);
     if (!markdownSections.hidden.has(data.id)) {
       editorApi.mount({
@@ -710,9 +783,9 @@ function renderCells() {
       });
       editorApi.setDiagnostic(data.id, [...(data.diagnostic ? [data.diagnostic] : []), ...staticDiagnostics(data.id)]);
     }
-    const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
+    const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.dataset.dropIndex = String(index + 1); gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
   });
-  renderToolbar(); renderOutline();
+  renderToolbar(); renderOutline(); renderCellMinimap();
   hydrateRichMime(cellsEl).catch(error => console.warn('Could not hydrate rich outputs.', error));
   // Removing the focused CodeMirror node can cause browsers to compensate by
   // scrolling after the first frame. Restore again after layout settles.
@@ -751,6 +824,7 @@ function renderNotebookNavigation() {
   renderRuntimeSelector();
 }
 function renderWorkspace() { renderProjectContext(); renderNotebookNavigation(); renderSqlConnectionSelector(); renderDatasets(); renderLinkedDatasets(); renderCells(); }
+window.setInterval(refreshExecutionTimestamps, 5000);
 function closeNotebook(id) {
   const openNotebooks = state.notebooks.notebooks.filter(item => item.open);
   if (openNotebooks.length === 1) return;
@@ -841,9 +915,11 @@ async function runCell(id) {
   const cell = getCell(id); if (!cell) return;
   if (dss.loading || (activeNotebook().remote && !dss.workspaceLoaded)) { setSavedState('Waiting for the native DSS notebook to finish loading…'); return false; }
   state.activeCellId = id;
-  if (cell.type === 'markdown') { cell.meta = 'Rendered just now'; save(); renderCells(); return true; }
-  if (!activeNotebook().remote) { cell.meta = `Ran just now · ${cell.type === 'sql' ? '0.18' : '0.24'}s`; cell.output = cell.type === 'sql' ? 'query' : 'table'; save(); renderCells(); return true; }
-  const started = performance.now(); cell.meta = 'Running…'; cell.running = true; renderCells();
+  const startedAt = Date.now(); const started = performance.now();
+  const order = nextExecutionOrder();
+  if (cell.type === 'markdown') { setExecution(cell, { status: 'succeeded', order, startedAt, finishedAt: Date.now(), durationMs: 0 }); cell.meta = ''; save(); renderCells(); return true; }
+  if (!activeNotebook().remote) { const durationMs = cell.type === 'sql' ? 180 : 240; cell.output = cell.type === 'sql' ? 'query' : 'table'; setExecution(cell, { status: 'succeeded', order, startedAt, finishedAt: Date.now(), durationMs }); cell.meta = ''; save(); renderCells(); return true; }
+  setExecution(cell, { status: 'running', order, startedAt, finishedAt: null, durationMs: null }); cell.meta = ''; cell.running = true; renderCells();
   try {
     const source = cell.type === 'sql' ? sqlExecutionSource(cell.source) : cell.source;
     const result = await executeInDssKernel(activeNotebook(), source, outputs => {
@@ -852,11 +928,13 @@ async function runCell(id) {
     cell.output = { outputs: result.outputs };
     cell.dssCell = { ...(cell.dssCell || {}), outputs: result.outputs, execution_count: result.executionCount };
     const failed = result.outputs.some(output => output.output_type === 'error');
-    cell.meta = failed ? 'Execution failed' : `Ran just now · ${((performance.now() - started) / 1000).toFixed(2)}s`;
-    cell.running = false; save(); renderCells(); setSavedState(failed ? 'Execution failed' : 'Executed in DSS', failed); return !failed;
+    cell.running = false;
+    setExecution(cell, { status: failed ? 'failed' : 'succeeded', order: result.executionCount || order, startedAt, finishedAt: Date.now(), durationMs: performance.now() - started });
+    cell.meta = ''; save(); renderCells(); setSavedState(failed ? 'Execution failed' : 'Executed in DSS', failed); return !failed;
   } catch (error) {
-    cell.running = false; cell.meta = 'Execution failed'; cell.output = { outputs: [{ output_type: 'error', ename: 'DSS execution error', evalue: error.message, traceback: [] }] };
-    renderCells(); setSavedState(`Execution failed: ${error.message}`, true); console.warn(error); return false;
+    cell.running = false; cell.output = { outputs: [{ output_type: 'error', ename: 'DSS execution error', evalue: error.message, traceback: [] }] };
+    setExecution(cell, { status: 'failed', order, startedAt, finishedAt: Date.now(), durationMs: performance.now() - started });
+    save(); renderCells(); setSavedState(`Execution failed: ${error.message}`, true); console.warn(error); return false;
   }
 }
 async function runAndAdvance(id) {
@@ -877,6 +955,15 @@ function moveCells(dragIds, targetId, after = false) {
   const targetIndex = cellIndex(targetId); const before = state.cells.slice(0, targetIndex + (after ? 1 : 0)).filter(cell => !ids.includes(cell.id));
   const rest = state.cells.slice(targetIndex + (after ? 1 : 0)).filter(cell => !ids.includes(cell.id));
   state.cells = [...before, ...moving, ...rest]; save(); renderCells();
+}
+function moveCellsToIndex(dragIds, insertionIndex) {
+  const ids = [...new Set(dragIds)].filter(id => getCell(id));
+  if (!ids.length) return;
+  const moving = state.cells.filter(cell => ids.includes(cell.id));
+  const remaining = state.cells.filter(cell => !ids.includes(cell.id));
+  const index = Math.max(0, Math.min(remaining.length, state.cells.slice(0, insertionIndex).filter(cell => !ids.includes(cell.id)).length));
+  state.cells = [...remaining.slice(0, index), ...moving, ...remaining.slice(index)];
+  save(); renderCells();
 }
 function moveCell(dragId, targetId) { moveCells([dragId], targetId); }
 function scrollableDragContainer(start) {
@@ -919,7 +1006,7 @@ async function runRelative(id, direction) {
   const index = cellIndex(id); const range = direction === 'above' ? state.cells.slice(0, index + 1) : state.cells.slice(index);
   for (const cell of range) if (!await runCell(cell.id)) break;
 }
-function clearCellOutput(id) { const cell = getCell(id); if (!cell) return; cell.output = ''; cell.meta = ''; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; save(); renderCells(); }
+function clearCellOutput(id) { const cell = getCell(id); if (!cell) return; cell.output = ''; cell.meta = ''; cell.execution = { status: 'never', order: null, startedAt: null, finishedAt: null, durationMs: null }; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; save(); renderCells(); }
 function toggleSection(id, collapsed = null) {
   const cell = getCell(id);
   if (!cell || cell.type !== 'markdown' || !sectionModel(state.cells).sections.has(id)) return;
@@ -982,28 +1069,57 @@ document.addEventListener('click', event => {
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
 cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').classList.remove('markdown-editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
 cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter, newCell(button.dataset.insertType)); });
-cellsEl.addEventListener('dragstart', event => {
+function clearPointerDrag() {
+  pointerDrag.preview?.remove(); pointerDrag.preview = null;
+  pointerDrag.active = false; pointerDrag.candidate = null; pointerDrag.dropIndex = null;
+  stopDragAutoScroll(); state.dragId = null; state.dragIds = [];
+  document.querySelectorAll('.cell.dragging, .cell.drop-target, .cell-insert-gap.drop-target').forEach(node => node.classList.remove('dragging', 'drop-target', 'drop-after'));
+}
+function setPointerDropTarget(index) {
+  pointerDrag.dropIndex = Number.isFinite(index) ? index : null;
+  document.querySelectorAll('.cell.drop-target, .cell-insert-gap.drop-target').forEach(node => node.classList.remove('drop-target', 'drop-after'));
+  if (pointerDrag.dropIndex == null) return;
+  document.querySelector(`.cell-insert-gap[data-drop-index="${pointerDrag.dropIndex}"]`)?.classList.add('drop-target');
+}
+function beginPointerDrag(event) {
   const handle = event.target.closest('.drag-handle'); const cell = handle?.closest('.cell');
-  if (!cell) { event.preventDefault(); return; }
-  event.dataTransfer?.setData('text/plain', cell.dataset.id); event.dataTransfer.effectAllowed = 'move';
-  // The draggable element is deliberately just the handle. Provide the whole
-  // card as the native drag image so the user keeps their visual bearings.
-  if (event.dataTransfer?.setDragImage) {
-    const preview = cell.cloneNode(true); preview.classList.add('cell-drag-preview');
-    preview.style.cssText = `position:fixed;left:-10000px;top:-10000px;width:${cell.getBoundingClientRect().width}px;pointer-events:none;opacity:.92;`;
-    document.body.appendChild(preview);
-    event.dataTransfer.setDragImage(preview, 24, 22);
-    requestAnimationFrame(() => preview.remove());
-  }
-  state.dragId = cell.dataset.id; state.dragIds = state.selected.has(cell.dataset.id) ? [...state.selected] : [cell.dataset.id];
+  if (!cell || event.button !== 0) return;
+  event.preventDefault();
+  pointerDrag.candidate = { id: cell.dataset.id, x: event.clientX, y: event.clientY, pointerId: event.pointerId, cell };
+  handle.setPointerCapture?.(event.pointerId);
+}
+function activatePointerDrag(event) {
+  const candidate = pointerDrag.candidate; if (!candidate || pointerDrag.active) return;
+  pointerDrag.active = true;
+  state.dragId = candidate.id; state.dragIds = state.selected.has(candidate.id) ? [...state.selected] : [candidate.id];
   state.dragIds.forEach(id => document.querySelector(`[data-id="${id}"]`)?.classList.add('dragging'));
-  dragScroll.container = scrollableDragContainer(cell);
-});
-document.addEventListener('dragover', updateDragAutoScroll);
-cellsEl.addEventListener('dragover', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (!cell || state.dragIds.includes(cell.dataset.id)) return; const bounds = cell.getBoundingClientRect(); cell.classList.toggle('drop-after', event.clientY > bounds.top + bounds.height / 2); cell.classList.add('drop-target'); });
-cellsEl.addEventListener('dragleave', event => event.target.closest('.cell')?.classList.remove('drop-target'));
-cellsEl.addEventListener('drop', event => { event.preventDefault(); const cell = event.target.closest('.cell'); if (cell) moveCells(state.dragIds, cell.dataset.id, cell.classList.contains('drop-after')); stopDragAutoScroll(); });
-cellsEl.addEventListener('dragend', () => { stopDragAutoScroll(); state.dragId = null; state.dragIds = []; document.querySelectorAll('.cell').forEach(cell => cell.classList.remove('dragging', 'drop-target', 'drop-after')); });
+  const preview = candidate.cell.cloneNode(true); preview.classList.add('cell-drag-preview');
+  preview.style.width = `${candidate.cell.getBoundingClientRect().width}px`; document.body.appendChild(preview); pointerDrag.preview = preview;
+  dragScroll.container = scrollableDragContainer(candidate.cell);
+}
+function updatePointerDrag(event) {
+  const candidate = pointerDrag.candidate; if (!candidate || event.pointerId !== candidate.pointerId) return;
+  if (!pointerDrag.active && Math.hypot(event.clientX - candidate.x, event.clientY - candidate.y) < 4) return;
+  activatePointerDrag(event); if (!pointerDrag.active) return;
+  pointerDrag.preview.style.left = `${event.clientX + 14}px`; pointerDrag.preview.style.top = `${event.clientY + 12}px`;
+  updateDragAutoScroll(event);
+  const target = document.elementFromPoint(event.clientX, event.clientY);
+  const gap = target?.closest?.('.cell-insert-gap[data-drop-index]');
+  if (gap) { setPointerDropTarget(Number(gap.dataset.dropIndex)); return; }
+  const cell = target?.closest?.('.cell');
+  if (!cell || state.dragIds.includes(cell.dataset.id)) { setPointerDropTarget(null); return; }
+  const box = cell.getBoundingClientRect(); setPointerDropTarget(cellIndex(cell.dataset.id) + (event.clientY > box.top + box.height / 2 ? 1 : 0));
+}
+function finishPointerDrag(event) {
+  const candidate = pointerDrag.candidate; if (!candidate || event.pointerId !== candidate.pointerId) return;
+  const dropIndex = pointerDrag.dropIndex; const ids = [...state.dragIds]; const active = pointerDrag.active;
+  clearPointerDrag();
+  if (active && dropIndex != null) moveCellsToIndex(ids, dropIndex);
+}
+cellsEl.addEventListener('pointerdown', beginPointerDrag);
+document.addEventListener('pointermove', updatePointerDrag);
+document.addEventListener('pointerup', finishPointerDrag);
+document.addEventListener('pointercancel', clearPointerDrag);
 
 function renderExecutionControls() {
   document.querySelector('#run-all').disabled = execution.runningAll;
@@ -1013,14 +1129,20 @@ function renderExecutionControls() {
 document.querySelector('#run-all').addEventListener('click', async () => {
   if (execution.runningAll) return;
   execution.runningAll = true; execution.stopRequested = false; renderExecutionControls();
+  state.cells.filter(cell => cell.type !== 'markdown').forEach(cell => setExecution(cell, { status: 'queued', startedAt: null, finishedAt: null, durationMs: null }));
+  renderCells();
   let ran = 0;
   for (const cell of state.cells) {
-    if (execution.stopRequested) break;
+    if (execution.stopRequested) {
+      if (executionState(cell).status === 'queued') setExecution(cell, { status: 'never' });
+      break;
+    }
     const succeeded = await runCell(cell.id); ran += 1;
     if (!succeeded) { setSavedState(`Run all stopped after cell ${ran} because it failed`, true); break; }
   }
   if (execution.stopRequested) setSavedState(`Run all stopped after ${ran} cell${ran === 1 ? '' : 's'}`);
-  execution.runningAll = false; renderExecutionControls();
+  state.cells.filter(cell => executionState(cell).status === 'queued').forEach(cell => setExecution(cell, { status: 'never' }));
+  execution.runningAll = false; save(); renderCells(); renderExecutionControls();
 });
 document.querySelector('#stop-run-all').addEventListener('click', () => { execution.stopRequested = true; setSavedState('Stopping after the current cell…'); });
 document.querySelector('#notebook-actions')?.addEventListener('click', () => document.querySelector('#notebook-actions-menu')?.classList.toggle('hidden'));
@@ -1030,9 +1152,7 @@ document.querySelector('#notebook-actions-menu')?.addEventListener('click', asyn
   if (action === 'export-ipynb') exportNotebook('ipynb');
   if (action === 'export-py') exportNotebook('py');
   if (action === 'copy-python') { await navigator.clipboard?.writeText(state.cells.filter(cell => cell.type !== 'markdown').map(cell => cell.source).join('\n\n# %%\n\n')); setSavedState('Python cells copied'); }
-  if (action === 'run-above' && state.activeCellId) runRelative(state.activeCellId, 'above');
-  if (action === 'run-below' && state.activeCellId) runRelative(state.activeCellId, 'below');
-  if (action === 'clear-outputs') { state.cells.forEach(cell => { cell.output = ''; cell.meta = ''; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; }); save(); renderCells(); }
+  if (action === 'clear-outputs') { state.cells.forEach(cell => { cell.output = ''; cell.meta = ''; cell.execution = { status: 'never', order: null, startedAt: null, finishedAt: null, durationMs: null }; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; }); save(); renderCells(); }
   if (action === 'restart-kernel') restartKernel();
   if (action === 'collapse-all') { const sections = sectionModel(state.cells); state.cells.filter(cell => sections.sections.get(cell.id)?.collapsedCount).forEach(cell => { cell.collapsed = true; state.collapsedHeadings.add(cell.id); }); save(false); renderCells(); }
   if (action === 'expand-all') { state.cells.forEach(cell => { cell.collapsed = false; }); state.collapsedHeadings.clear(); save(false); renderCells(); }
@@ -1197,11 +1317,31 @@ async function createDatasetFromDataframe(cellId) {
 }
 cellsEl.addEventListener('input', event => { const filter = event.target.closest('.dataframe-filter input'); if (filter) filterDataframe(filter.closest('.dataframe-output'), filter.value); });
 cellsEl.addEventListener('click', event => {
-  const copyError = event.target.closest('[data-copy-error]'); if (copyError) { const text = copyError.closest('.error-output')?.querySelector('.error-copy-source')?.value || ''; navigator.clipboard?.writeText(text); setSavedState('Error copied to clipboard'); return; }
+  const copySummary = event.target.closest('[data-copy-error-summary]'); if (copySummary) { const text = copySummary.closest('.error-output')?.querySelector('.error-summary-copy-source')?.value || ''; navigator.clipboard?.writeText(text); setSavedState('Error summary copied to clipboard'); return; }
+  const copyTraceback = event.target.closest('[data-copy-full-traceback]'); if (copyTraceback) { const text = copyTraceback.closest('.error-output')?.querySelector('.error-traceback-copy-source')?.value || ''; navigator.clipboard?.writeText(text); setSavedState('Full traceback copied to clipboard'); return; }
   const header = event.target.closest('[data-sort-column]'); if (header) { sortDataframe(header.closest('table'), Number(header.dataset.sortColumn)); return; }
   const createDataset = event.target.closest('[data-create-dataset-from-cell]'); if (createDataset) { createDatasetFromDataframe(createDataset.dataset.createDatasetFromCell); return; }
   const chart = event.target.closest('.chart-dataframe'); if (chart) { chartDataframe(chart.closest('.dataframe-output')); return; }
   const explore = event.target.closest('.explore-dataframe'); if (explore) { const section = explore.closest('.dataframe-output'); document.querySelector('#dataframe-modal-content').innerHTML = section.outerHTML; document.querySelector('#dataframe-modal').classList.remove('hidden'); }
+});
+function revealCell(id) {
+  const cell = getCell(id); if (!cell) return;
+  const sections = sectionModel(state.cells);
+  state.cells.forEach(candidate => {
+    const section = sections.sections.get(candidate.id);
+    const index = cellIndex(id);
+    if (candidate.collapsed && section && index > section.start && index < section.end) candidate.collapsed = false;
+  });
+  renderCells(); setActiveCell(id);
+  document.querySelector(`[data-id="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+document.querySelector('#cell-minimap')?.addEventListener('click', event => {
+  const track = event.target.closest('[data-minimap-cell]'); if (track) { revealCell(track.dataset.minimapCell); return; }
+  if (event.target.closest('#minimap-last-run')) {
+    const recent = [...state.cells].filter(cell => executionState(cell).finishedAt || executionState(cell).order).sort((left, right) => (executionState(right).finishedAt || 0) - (executionState(left).finishedAt || 0))[0];
+    if (recent) revealCell(recent.id);
+  }
+  if (event.target.closest('#minimap-first-failed')) { const failed = state.cells.find(cell => executionState(cell).status === 'failed'); if (failed) revealCell(failed.id); }
 });
 const dataframeModal = document.querySelector('#dataframe-modal');
 const closeDataframeModal = () => dataframeModal?.classList.add('hidden');
@@ -1240,7 +1380,7 @@ document.querySelector('#use-dss-version')?.addEventListener('click', () => {
 });
 document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
-  if (event.key === 'Escape') { closeCellMenus(); closeSettings(); closeFolderModal(); closeDataframeModal(); return; }
+  if (event.key === 'Escape') { clearPointerDrag(); closeCellMenus(); closeSettings(); closeFolderModal(); closeDataframeModal(); return; }
   if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { if (event.target.closest?.('.cm-editor')) return; event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
   // A focused CodeMirror editor owns its own undo stack. Let it handle Cmd/Ctrl+Z
   // so the edit is undone in place and the cursor never leaves the cell.

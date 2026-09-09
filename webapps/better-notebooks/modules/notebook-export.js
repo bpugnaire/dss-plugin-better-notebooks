@@ -2,7 +2,10 @@ export function sourceLines(source) { return source ? String(source).match(/[^\n
 
 export function pythonExport(cells) {
   return cells.map(cell => {
-    if (cell.type === 'markdown') return cell.source.split('\n').map(line => `# ${line ? `---- Markdown cell ---- ${line}` : '#'}`).join('\n');
+    if (cell.type === 'markdown') {
+      const content = String(cell.source || '').split('\n').map(line => line ? `# ${line}` : '#').join('\n');
+      return `# ---- Markdown cell ----\n${content}`;
+    }
     if (cell.type === 'sql') return `# ---- SQL cell ----\n# %% SQL\n${cell.source}`;
     return `# ---- Code cell ----\n${cell.source}`;
   }).join('\n\n');

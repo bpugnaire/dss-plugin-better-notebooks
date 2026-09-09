@@ -1,6 +1,6 @@
 /** Small, dependency-free notebook state primitives. Kept separate from DOM rendering. */
 export function createNotebookState(notebooks) {
-  return { notebooks, activeNotebookId: null, notebookListMode: 'all', cells: [], selected: new Set(), clipboard: [], dragId: null, dragIds: [], activeCellId: null, history: [], historyIndex: -1, collapsedHeadings: new Set(), searchQuery: '', searchIndex: 0 };
+  return { notebooks, activeNotebookId: null, notebookListMode: 'all', cells: [], selected: new Set(), clipboard: [], dragId: null, dragIds: [], activeCellId: null, history: [], historyIndex: -1, collapsedHeadings: new Set(), searchQuery: '', searchIndex: 0, nextExecutionOrder: 1 };
 }
 
 export function resetHistory(state) { state.history = [JSON.stringify(state.cells)]; state.historyIndex = 0; }
