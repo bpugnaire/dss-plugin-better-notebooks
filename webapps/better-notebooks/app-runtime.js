@@ -949,13 +949,18 @@ cellsEl.addEventListener('click', event => {
     else runCell(id);
   }
   if (event.target.closest('.delete-cell')) { state.selected = new Set([id]); deleteSelected(); }
-  if (event.target.closest('.more-cell')) cell.classList.toggle('more-open');
+  if (event.target.closest('.more-cell')) { cell.classList.toggle('more-open'); cell.classList.remove('cell-menu-open'); }
   const action = event.target.closest('[data-cell-action]')?.dataset.cellAction;
   if (action === 'run-above') runRelative(id, 'above');
   if (action === 'run-below') runRelative(id, 'below');
   if (action === 'clear-output') clearCellOutput(id);
   if (action === 'format') { const target = getCell(id); target.source = formatCellSource(target); save(); renderCells(); focusCell(id, true); }
-  if (event.target.closest('.cell-type-selector')) { cell.querySelector('.cell-type').classList.toggle('open'); }
+  if (event.target.closest('.cell-type-selector')) {
+    const typeMenu = cell.querySelector('.cell-type');
+    typeMenu.classList.toggle('open');
+    cell.classList.toggle('cell-menu-open', typeMenu.classList.contains('open'));
+    cell.classList.remove('more-open');
+  }
   const typeOption = event.target.closest('[data-cell-type]');
   if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); queuePythonCheck(target); renderCells(); }
   if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.classList.add('markdown-editing'); cell.querySelector('.code-editor').classList.add('editing'); focusCell(id); }

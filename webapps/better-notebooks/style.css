@@ -238,13 +238,7 @@ button { cursor: pointer; }
   pointer-events:none;
 }
 .cell.markdown-display:not(.markdown-editing) .drag-handle,
-.cell.markdown-display:not(.markdown-editing) .cell-check { opacity:0; pointer-events:none; transition:opacity .12s ease; }
-.cell.markdown-display:not(.markdown-editing):hover .drag-handle,
-.cell.markdown-display:not(.markdown-editing):hover .cell-check,
-.cell.markdown-display:not(.markdown-editing):focus-within .drag-handle,
-.cell.markdown-display:not(.markdown-editing):focus-within .cell-check,
-.cell.markdown-display:not(.markdown-editing).selected .drag-handle,
-.cell.markdown-display:not(.markdown-editing).selected .cell-check { opacity:1; pointer-events:auto; }
+.cell.markdown-display:not(.markdown-editing) .cell-check { display:none; }
 .section-collapse {
   display:grid;
   place-items:center;
@@ -272,3 +266,9 @@ button { cursor: pointer; }
 }
 .collapsed-section-summary:hover { border-color:#73e6b4; background:#e7f8f0; color:#176447; }
 .cell.markdown-display.markdown-editing .cell-content { border-color:#73c9a7; box-shadow:0 0 0 2px rgba(115,230,180,.13); }
+
+/* Menus must be allowed to extend beyond short cell cards. */
+.cell.cell-menu-open .cell-content,
+.cell.more-open .cell-content { overflow:visible; position:relative; z-index:10; }
+.cell.cell-menu-open .type-options,
+.cell.more-open .cell-more-menu { z-index:20; }
