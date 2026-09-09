@@ -1096,8 +1096,12 @@ function activatePointerDrag(event) {
   pointerDrag.active = true;
   state.dragId = candidate.id; state.dragIds = state.selected.has(candidate.id) ? [...state.selected] : [candidate.id];
   state.dragIds.forEach(id => document.querySelector(`[data-id="${id}"]`)?.classList.add('dragging'));
-  const preview = candidate.cell.cloneNode(true); preview.classList.add('cell-drag-preview');
-  preview.style.width = `${candidate.cell.getBoundingClientRect().width}px`; document.body.appendChild(preview); pointerDrag.preview = preview;
+  // Cloning a mounted CodeMirror tree makes the first drag frame expensive.
+  // Keep the source cell visible and use a deliberately small, cheap preview.
+  const source = getCell(candidate.id)?.source?.trim().split('\n')[0] || 'Empty cell';
+  const preview = document.createElement('div'); preview.className = 'cell-drag-preview';
+  preview.innerHTML = `<span>Moving ${state.dragIds.length > 1 ? `${state.dragIds.length} cells` : 'cell'}</span><strong>${escapeHTML(source.slice(0, 72))}</strong>`;
+  preview.style.width = `${Math.min(candidate.cell.getBoundingClientRect().width, 360)}px`; document.body.appendChild(preview); pointerDrag.preview = preview;
   dragScroll.container = scrollableDragContainer(candidate.cell);
 }
 function updatePointerDrag(event) {
@@ -1108,9 +1112,7 @@ function updatePointerDrag(event) {
   const target = document.elementFromPoint(event.clientX, event.clientY);
   const gap = target?.closest?.('.cell-insert-gap[data-drop-index]');
   if (gap) { setPointerDropTarget(Number(gap.dataset.dropIndex)); return; }
-  const cell = target?.closest?.('.cell');
-  if (!cell || state.dragIds.includes(cell.dataset.id)) { setPointerDropTarget(null); return; }
-  const box = cell.getBoundingClientRect(); setPointerDropTarget(cellIndex(cell.dataset.id) + (event.clientY > box.top + box.height / 2 ? 1 : 0));
+  setPointerDropTarget(null);
 }
 function finishPointerDrag(event) {
   const candidate = pointerDrag.candidate; if (!candidate || event.pointerId !== candidate.pointerId) return;
