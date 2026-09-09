@@ -9,6 +9,7 @@
     "icon": "icon-book",
     "licenseInfo": "Apache-2.0",
     "tags": ["notebooks", "developer-tools", "productivity"],
-    "supportLevel": "NOT_SUPPORTED"
+    "supportLevel": "NOT_SUPPORTED",
+    "url": "https://github.com/bpugnaire/dss-plugin-better-notebooks"
   }
 }
