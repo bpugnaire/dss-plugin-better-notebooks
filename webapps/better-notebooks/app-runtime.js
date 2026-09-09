@@ -742,7 +742,8 @@ function renderCells() {
     const section = markdownSections.sections.get(data.id);
     const node = template.content.firstElementChild.cloneNode(true);
     node.dataset.id = data.id; node.dataset.type = data.type; node.draggable = false;
-    if (data.type === 'markdown') node.classList.add('markdown-display');
+    if (data.type === 'markdown' && !data.markdownEditing) node.classList.add('markdown-display');
+    if (data.type === 'markdown' && data.markdownEditing) node.classList.add('markdown-editing');
     node.querySelector('.drag-handle').draggable = false;
     if (state.selected.has(data.id)) node.classList.add('selected');
     if (state.activeCellId === data.id) node.classList.add('active');
@@ -760,8 +761,9 @@ function renderCells() {
     }
     const language = node.querySelector('.cell-language'); language.classList.add(data.type);
     const editorHost = node.querySelector('.code-editor');
+    if (data.type === 'markdown' && data.markdownEditing) editorHost.classList.add('editing');
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
-    node.querySelector('.cell-output').innerHTML = data.type === 'markdown'
+    node.querySelector('.cell-output').innerHTML = data.type === 'markdown' && !data.markdownEditing
       ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}${data.collapsed && section?.collapsedCount ? `<button class="collapsed-section-summary" type="button" data-toggle-section="${escapeHTML(data.id)}">${section.collapsedCount} cell${section.collapsedCount === 1 ? '' : 's'} collapsed</button>` : ''}</div>`
       : outputMarkup(data.output, data.id);
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
@@ -917,7 +919,7 @@ async function runCell(id) {
   state.activeCellId = id;
   const startedAt = Date.now(); const started = performance.now();
   const order = nextExecutionOrder();
-  if (cell.type === 'markdown') { setExecution(cell, { status: 'succeeded', order, startedAt, finishedAt: Date.now(), durationMs: 0 }); cell.meta = ''; save(); renderCells(); return true; }
+  if (cell.type === 'markdown') { cell.markdownEditing = false; setExecution(cell, { status: 'succeeded', order, startedAt, finishedAt: Date.now(), durationMs: 0 }); cell.meta = ''; save(); renderCells(); return true; }
   if (!activeNotebook().remote) { const durationMs = cell.type === 'sql' ? 180 : 240; cell.output = cell.type === 'sql' ? 'query' : 'table'; setExecution(cell, { status: 'succeeded', order, startedAt, finishedAt: Date.now(), durationMs }); cell.meta = ''; save(); renderCells(); return true; }
   setExecution(cell, { status: 'running', order, startedAt, finishedAt: null, durationMs: null }); cell.meta = ''; cell.running = true; renderCells();
   try {
@@ -1020,6 +1022,20 @@ async function restartKernel() {
   try { await jupyterRequest(`api/kernels/${encodeURIComponent(dss.kernel.kernelId)}/restart`, { method: 'POST', body: '{}' }); dss.kernel.socket.close(); dss.kernel = null; setKernelStatus('Restarted', 'idle'); setSavedState('Kernel restarted'); }
   catch (error) { setSavedState(`Kernel restart failed: ${error.message}`, true); }
 }
+async function restartKernelWithRuntime(notebook) {
+  const previousKernel = dss.kernel;
+  setKernelStatus('Starting…', 'busy');
+  if (previousKernel?.socket) previousKernel.socket.close();
+  dss.kernel = null;
+  // A Jupyter restart retains the old kernelspec. Close the existing DSS
+  // session and create a fresh one so the selected code environment is real.
+  if (previousKernel?.dssSessionId) {
+    try { await jupyterRequest(`api/sessions/${encodeURIComponent(previousKernel.dssSessionId)}`, { method: 'DELETE' }); }
+    catch (error) { console.warn('Could not close the previous kernel session.', error); }
+  }
+  await connectDssKernel(notebook);
+  setKernelStatus('Connected', 'connected');
+}
 function closeCellMenus() {
   document.querySelectorAll('.cell.more-open, .cell.cell-menu-open').forEach(cell => {
     cell.classList.remove('more-open', 'cell-menu-open');
@@ -1060,14 +1076,15 @@ cellsEl.addEventListener('click', event => {
     cell.classList.toggle('cell-menu-open', shouldOpen);
   }
   const typeOption = event.target.closest('[data-cell-type]');
-  if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.output = ''; target.meta = ''; save(); queuePythonCheck(target); renderCells(); }
-  if (event.target.closest('.markdown-render')) { const renderer = event.target.closest('.markdown-render'); renderer.classList.add('editing'); cell.classList.add('markdown-editing'); cell.querySelector('.code-editor').classList.add('editing'); focusCell(id); }
+  if (typeOption) { const target = getCell(id); target.type = typeOption.dataset.cellType; target.markdownEditing = target.type === 'markdown'; target.output = ''; target.meta = ''; save(); queuePythonCheck(target); renderCells(); focusCell(id, true); }
+  if (event.target.closest('.markdown-render')) { const target = getCell(id); target.markdownEditing = true; save(false); renderCells(); focusCell(id, true); return; }
 });
 document.addEventListener('click', event => {
   if (!event.target.closest('.cell-type, .more-cell, .cell-more-menu')) closeCellMenus();
 });
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
-cellsEl.addEventListener('focusout', event => { const editor = event.target.closest?.('.code-editor.editing'); if (editor && !editor.contains(event.relatedTarget)) { editor.classList.remove('editing'); editor.closest('.cell').classList.remove('markdown-editing'); editor.closest('.cell').querySelector('.markdown-render')?.classList.remove('editing'); } });
+// Markdown stays in edit mode after it is opened. Running the cell explicitly
+// renders it again, so cell controls remain reachable while editing.
 cellsEl.addEventListener('click', event => { const button = event.target.closest('[data-insert-after]'); if (button) insertAfter(button.dataset.insertAfter, newCell(button.dataset.insertType)); });
 function clearPointerDrag() {
   pointerDrag.preview?.remove(); pointerDrag.preview = null;
@@ -1168,14 +1185,34 @@ document.querySelector('#retry-save')?.addEventListener('click', async () => {
   try { await flushDssSave(activeNotebook()); }
   catch (error) { saveFailure = error; setSavedState('Save failed — retry', true); }
 });
-document.querySelector('#executor-selector').addEventListener('change', event => {
-  dss.activeRuntimeId = event.target.value;
+document.querySelector('#executor-selector').addEventListener('change', async event => {
+  const requestedRuntime = event.target.value;
   const notebook = activeNotebook();
-  if (dss.enabled && notebook?.remote) {
-    notebook.runtimeId = dss.activeRuntimeId;
-    save(false);
-    setSavedState('Saving Python environment to DSS…');
-  } else if (dss.enabled) setSavedState('Runtime selected for the next DSS notebook');
+  const previousRuntime = notebook?.runtimeId || dss.activeRuntimeId;
+  if (requestedRuntime === previousRuntime) return;
+  if (!dss.enabled || !notebook?.remote) {
+    dss.activeRuntimeId = requestedRuntime;
+    if (notebook) notebook.runtimeId = requestedRuntime;
+    setSavedState('Runtime selected for the next DSS notebook');
+    return;
+  }
+  const requestedLabel = dss.runtimes.find(runtime => runtime.id === requestedRuntime)?.label || requestedRuntime;
+  if (!window.confirm(`Switch to ${requestedLabel}? This restarts the Python kernel and clears all variables and in-memory outputs.`)) {
+    event.target.value = previousRuntime;
+    return;
+  }
+  try {
+    event.target.disabled = true;
+    dss.activeRuntimeId = requestedRuntime; notebook.runtimeId = requestedRuntime;
+    setSavedState('Saving environment and restarting kernel…');
+    await flushDssSave(notebook);
+    await restartKernelWithRuntime(notebook);
+    setSavedState(`Kernel restarted with ${requestedLabel}`);
+  } catch (error) {
+    dss.activeRuntimeId = previousRuntime; notebook.runtimeId = previousRuntime; event.target.value = previousRuntime;
+    setKernelStatus('Runtime switch failed', 'error');
+    setSavedState(`Runtime switch failed: ${error.message}`, true); console.warn(error);
+  } finally { event.target.disabled = false; }
 });
 document.querySelector('#sql-executor-selector').addEventListener('change', event => {
   projectContext.sqlConnection = event.target.value;
