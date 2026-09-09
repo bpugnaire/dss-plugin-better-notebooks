@@ -350,7 +350,7 @@ function executionLabel(cell) {
   if (detail.status === 'running') return `Running · started ${new Date(detail.startedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
   if (detail.status === 'interrupted') return 'Interrupted';
   const time = timeAgo(detail.finishedAt) || (detail.status === 'failed' ? 'Execution failed' : 'Previously run');
-  const duration = Number.isFinite(detail.durationMs) ? ` · ${(detail.durationMs / 1000).toFixed(2)}s` : '';
+  const duration = Number.isFinite(detail.durationMs) ? ` · (${(detail.durationMs / 1000).toFixed(2)}s)` : '';
   const order = detail.order ? ` · #${detail.order}` : '';
   return `${time}${duration}${order}`;
 }
@@ -665,7 +665,7 @@ function outputMarkup(kind, cellId = '') {
       if (output.output_type === 'error') {
         const summary = `${output.ename || 'Error'}: ${output.evalue || ''}`;
         const fullError = outputText([summary, ...(output.traceback || [])].join('\n'));
-        rendered.push(`<section class="error-output"><header><div class="error-summary"><strong>${escapeHTML(output.ename || 'Execution error')}</strong><span>${escapeHTML(output.evalue || '')}</span></div><div class="error-copy-actions"><button data-copy-error-summary="${escapeHTML(cellId)}-${outputIndex}" title="Copy error summary" aria-label="Copy error summary"><i class="copy-icon" aria-hidden="true"></i></button><button data-copy-full-traceback="${escapeHTML(cellId)}-${outputIndex}" title="Copy full traceback"> <i class="copy-icon" aria-hidden="true"></i> Copy full traceback</button></div></header><details><summary>Show traceback</summary><pre class="runtime-output">${escapeHTML(fullError)}</pre></details><textarea class="error-summary-copy-source" hidden>${escapeHTML(summary)}</textarea><textarea class="error-traceback-copy-source" hidden>${escapeHTML(fullError)}</textarea></section>`);
+        rendered.push(`<section class="error-output"><header><div class="error-summary"><strong>${escapeHTML(output.ename || 'Execution error')}</strong><span>${escapeHTML(output.evalue || '')}</span></div></header><details><summary>Show traceback</summary><div class="traceback-box"><button data-copy-error="${escapeHTML(cellId)}-${outputIndex}" title="Copy error"><i class="copy-icon" aria-hidden="true"></i> Copy error</button><pre class="runtime-output">${escapeHTML(fullError)}</pre></div></details><textarea class="error-copy-source" hidden>${escapeHTML(fullError)}</textarea></section>`);
         return;
       }
       const dataframe = dataframeMarkup(output.data?.['text/html'], cellId);
@@ -1085,8 +1085,11 @@ function beginPointerDrag(event) {
   const handle = event.target.closest('.drag-handle'); const cell = handle?.closest('.cell');
   if (!cell || event.button !== 0) return;
   event.preventDefault();
-  pointerDrag.candidate = { id: cell.dataset.id, x: event.clientX, y: event.clientY, pointerId: event.pointerId, cell };
+  const bounds = cell.getBoundingClientRect();
+  pointerDrag.candidate = { id: cell.dataset.id, x: event.clientX, y: event.clientY, offsetX: event.clientX - bounds.left, offsetY: event.clientY - bounds.top, pointerId: event.pointerId, cell };
   handle.setPointerCapture?.(event.pointerId);
+  activatePointerDrag(event);
+  updatePointerDrag(event);
 }
 function activatePointerDrag(event) {
   const candidate = pointerDrag.candidate; if (!candidate || pointerDrag.active) return;
@@ -1099,9 +1102,8 @@ function activatePointerDrag(event) {
 }
 function updatePointerDrag(event) {
   const candidate = pointerDrag.candidate; if (!candidate || event.pointerId !== candidate.pointerId) return;
-  if (!pointerDrag.active && Math.hypot(event.clientX - candidate.x, event.clientY - candidate.y) < 4) return;
   activatePointerDrag(event); if (!pointerDrag.active) return;
-  pointerDrag.preview.style.left = `${event.clientX + 14}px`; pointerDrag.preview.style.top = `${event.clientY + 12}px`;
+  pointerDrag.preview.style.left = `${event.clientX - candidate.offsetX}px`; pointerDrag.preview.style.top = `${event.clientY - candidate.offsetY}px`;
   updateDragAutoScroll(event);
   const target = document.elementFromPoint(event.clientX, event.clientY);
   const gap = target?.closest?.('.cell-insert-gap[data-drop-index]');
@@ -1317,8 +1319,7 @@ async function createDatasetFromDataframe(cellId) {
 }
 cellsEl.addEventListener('input', event => { const filter = event.target.closest('.dataframe-filter input'); if (filter) filterDataframe(filter.closest('.dataframe-output'), filter.value); });
 cellsEl.addEventListener('click', event => {
-  const copySummary = event.target.closest('[data-copy-error-summary]'); if (copySummary) { const text = copySummary.closest('.error-output')?.querySelector('.error-summary-copy-source')?.value || ''; navigator.clipboard?.writeText(text); setSavedState('Error summary copied to clipboard'); return; }
-  const copyTraceback = event.target.closest('[data-copy-full-traceback]'); if (copyTraceback) { const text = copyTraceback.closest('.error-output')?.querySelector('.error-traceback-copy-source')?.value || ''; navigator.clipboard?.writeText(text); setSavedState('Full traceback copied to clipboard'); return; }
+  const copyError = event.target.closest('[data-copy-error]'); if (copyError) { const text = copyError.closest('.error-output')?.querySelector('.error-copy-source')?.value || ''; navigator.clipboard?.writeText(text); setSavedState('Error copied to clipboard'); return; }
   const header = event.target.closest('[data-sort-column]'); if (header) { sortDataframe(header.closest('table'), Number(header.dataset.sortColumn)); return; }
   const createDataset = event.target.closest('[data-create-dataset-from-cell]'); if (createDataset) { createDatasetFromDataframe(createDataset.dataset.createDatasetFromCell); return; }
   const chart = event.target.closest('.chart-dataframe'); if (chart) { chartDataframe(chart.closest('.dataframe-output')); return; }
@@ -1327,13 +1328,18 @@ cellsEl.addEventListener('click', event => {
 function revealCell(id) {
   const cell = getCell(id); if (!cell) return;
   const sections = sectionModel(state.cells);
+  let expanded = false;
   state.cells.forEach(candidate => {
     const section = sections.sections.get(candidate.id);
     const index = cellIndex(id);
-    if (candidate.collapsed && section && index > section.start && index < section.end) candidate.collapsed = false;
+    if (candidate.collapsed && section && index > section.start && index < section.end) { candidate.collapsed = false; expanded = true; }
   });
-  renderCells(); setActiveCell(id);
-  document.querySelector(`[data-id="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (expanded) { save(false); renderCells(); }
+  const scroll = () => {
+    setActiveCell(id);
+    document.querySelector(`[data-id="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+  requestAnimationFrame(() => window.setTimeout(scroll, expanded ? 35 : 0));
 }
 document.querySelector('#cell-minimap')?.addEventListener('click', event => {
   const track = event.target.closest('[data-minimap-cell]'); if (track) { revealCell(track.dataset.minimapCell); return; }
