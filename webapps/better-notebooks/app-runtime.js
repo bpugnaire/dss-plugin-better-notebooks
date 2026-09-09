@@ -751,7 +751,7 @@ function renderCells() {
     if (executionDetail.status === 'running') node.classList.add('running');
     node.dataset.executionStatus = executionDetail.status;
     if (markdownSections.hidden.has(data.id)) node.classList.add('section-hidden');
-    if (section?.collapsedCount) {
+    if (section?.collapsedCount && !data.markdownEditing) {
       const collapseButton = node.querySelector('.section-collapse');
       collapseButton.classList.remove('hidden');
       collapseButton.dataset.toggleSection = data.id;
