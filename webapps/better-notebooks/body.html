@@ -48,14 +48,13 @@
           <div class="head-actions">
             <button class="button primary" id="run-all"><span>▶</span> Run all</button>
             <button class="button ghost hidden" id="stop-run-all"><span>■</span> Stop</button>
-            <button class="button ghost restart-kernel-button" id="restart-kernel-button" title="Restart kernel" aria-label="Restart kernel">⟳ Restart</button>
+            <button class="button ghost restart-kernel-button" id="restart-kernel-button" title="Restart kernel" aria-label="Restart kernel"><span class="restart-kernel-icon">⟳</span> Restart</button>
             <button class="button ghost" id="notebook-actions" title="Notebook actions" aria-label="Notebook actions">•••</button>
             <div class="notebook-actions-menu hidden" id="notebook-actions-menu" role="menu">
               <button data-notebook-action="export-ipynb">Download .ipynb</button>
               <button data-notebook-action="export-py">Download .py</button>
               <button data-notebook-action="copy-python">Copy as Python</button>
               <hr><button data-notebook-action="clear-outputs">Clear all outputs</button>
-              <button data-notebook-action="restart-kernel">Restart kernel</button>
               <button data-notebook-action="collapse-all">Collapse all sections</button>
               <button data-notebook-action="expand-all">Expand all sections</button>
             </div>
