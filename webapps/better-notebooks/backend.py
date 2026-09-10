@@ -55,7 +55,9 @@ def available_llms():
     try:
         all_models = current_project().list_llms()
         try:
-            models = current_project().list_llms(purpose="TEXT_GENERATION") or all_models
+            # Dataiku calls chat/code-capable models GENERIC_COMPLETION. The
+            # similarly named TEXT_GENERATION value is not a valid purpose.
+            models = current_project().list_llms(purpose="GENERIC_COMPLETION") or all_models
         except TypeError:
             # DSS versions prior to the purpose selector are still supported.
             models = all_models
