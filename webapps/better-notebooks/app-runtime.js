@@ -680,6 +680,9 @@ function aiHelpMarkup(cell) {
   const error = cell.ai.error ? `<div class="cell-ai-error">${escapeHTML(cell.ai.error)}</div>` : '';
   return `<section class="cell-ai-panel"><header><span>✦ AI help</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI help">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Explain this cell">Explain</button><button type="button" data-ai-prompt="Find likely bugs and explain how to fix them">Fix bugs</button><button type="button" data-ai-prompt="Suggest a clearer, more idiomatic version while preserving behaviour">Improve</button></div><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Ask about this cell…">${escapeHTML(cell.ai.question || '')}</textarea><footer><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Asking LLM Mesh…' : 'Ask AI'}</button></footer>${error}${response}</section>`;
 }
+function focusAiQuestion(id) {
+  requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] [data-ai-question]`)?.focus());
+}
 async function askCellAi(id, question) {
   const cell = getCell(id); if (!cell) return;
   if (!dss.enabled || !aiAssistant.available) {
@@ -738,9 +741,11 @@ function outputMarkup(kind, cellId = '') {
 }
 function updateRenderedCellOutput(cell) {
   const node = document.querySelector(`[data-id="${cell.id}"]`); if (!node) return;
+  const aiContainer = node.querySelector('.cell-ai-container');
+  if (aiContainer) aiContainer.innerHTML = aiHelpMarkup(cell);
   node.querySelector('.cell-output').innerHTML = cell.type === 'markdown' && !cell.markdownEditing
     ? `<div class="markdown-render" tabindex="0">${markdownMarkup(cell.source)}</div>`
-    : `${outputMarkup(cell.output, cell.id)}${aiHelpMarkup(cell)}`;
+    : outputMarkup(cell.output, cell.id);
   hydrateRichMime(node).catch(error => console.warn('Could not hydrate rich output.', error));
 }
 function updateRenderedRunState(cell) {
@@ -815,9 +820,10 @@ function renderCells() {
     const editorHost = node.querySelector('.code-editor');
     if (data.type === 'markdown' && data.markdownEditing) editorHost.classList.add('editing');
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
+    node.querySelector('.cell-ai-container').innerHTML = aiHelpMarkup(data);
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown' && !data.markdownEditing
       ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}${data.collapsed && section?.collapsedCount ? `<button class="collapsed-section-summary" type="button" data-toggle-section="${escapeHTML(data.id)}">${section.collapsedCount} cell${section.collapsedCount === 1 ? '' : 's'} collapsed</button>` : ''}</div>`
-      : `${outputMarkup(data.output, data.id)}${aiHelpMarkup(data)}`;
+      : outputMarkup(data.output, data.id);
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
     const meta = node.querySelector('.execution-meta-top');
     const label = executionLabel(data); const icon = executionIcon(executionDetail.status);
@@ -1105,10 +1111,10 @@ cellsEl.addEventListener('change', event => { if (event.target.matches('.cell-ch
 cellsEl.addEventListener('click', event => {
   const cell = event.target.closest('.cell'); if (!cell) return; const id = cell.dataset.id;
   setActiveCell(id);
-  if (event.target.closest('.ai-help')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: !target.ai?.open, loading: false, error: '' }; renderCells(); return; }
+  if (event.target.closest('.ai-help')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: true, loading: false, error: '' }; renderCells(); focusAiQuestion(id); return; }
   if (event.target.closest('[data-ai-close]')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: false }; renderCells(); return; }
   const aiPrompt = event.target.closest('[data-ai-prompt]');
-  if (aiPrompt) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: true, question: aiPrompt.dataset.aiPrompt }; renderCells(); return; }
+  if (aiPrompt) { askCellAi(id, aiPrompt.dataset.aiPrompt); return; }
   const aiSend = event.target.closest('[data-ai-send]');
   if (aiSend) { const question = cell.querySelector(`[data-ai-question="${id}"]`)?.value.trim() || 'Explain this cell and suggest an improvement.'; askCellAi(id, question); return; }
   if (event.target.closest('[data-toggle-section]')) { toggleSection(id); return; }
