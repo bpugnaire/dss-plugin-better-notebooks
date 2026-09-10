@@ -94,6 +94,7 @@ def prepare_ai_completion(payload):
     language = str(cell.get("language") or "python").strip().lower()
     notebook_name = str(payload.get("notebookName") or "this notebook").strip()
     error = str(payload.get("error") or "").strip()
+    mode = str(payload.get("mode") or "answer").strip().lower()
     if len(source) > MAX_AI_SOURCE_LENGTH or len(question) > MAX_AI_QUESTION_LENGTH:
         raise ValueError("The cell or question is too large for AI assistance.")
     models = available_llms()
@@ -107,6 +108,12 @@ def prepare_ai_completion(payload):
         "Do not claim to have executed code. Explain risks clearly, preserve Dataiku conventions, and return "
         "Markdown with a suggested replacement only when it materially helps."
     )
+    if mode == "rewrite":
+        system_prompt = (
+            "You are a Dataiku notebook coding assistant. Rewrite the supplied single cell to satisfy the request. "
+            "Return only the complete replacement source code for that cell: no Markdown fences, explanation, or preamble. "
+            "Preserve Dataiku conventions and do not claim that code has run."
+        )
     user_prompt = "\n\n".join([
         "Notebook: %s" % notebook_name,
         "Cell language: %s" % language,

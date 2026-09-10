@@ -9,6 +9,7 @@ import { sql } from '@codemirror/lang-sql';
 import { markdown } from '@codemirror/lang-markdown';
 
 const editors = new Map();
+const silentUpdates = new Set();
 const notebookLightTheme = EditorView.theme({
   '&': { backgroundColor: '#ffffff', color: '#2d2932' },
   '.cm-content': { caretColor: '#5d42c6' },
@@ -157,7 +158,7 @@ export function mount({ id, parent, source, type, datasets, symbols = [], connec
           indentWithTab, ...closeBracketsKeymap, ...completionKeymap, ...historyKeymap, ...defaultKeymap,
         ]),
         EditorView.updateListener.of(update => {
-          if (update.docChanged) onChange(update.state.doc.toString());
+          if (update.docChanged && !silentUpdates.has(id)) onChange(update.state.doc.toString());
         }),
       ],
     }),
@@ -184,9 +185,11 @@ export function setDiagnostic(id, diagnostic) {
   view.dispatch(setDiagnostics(view.state, diagnostics));
 }
 
-export function replaceSource(id, source) {
+export function replaceSource(id, source, silent = false) {
   const view = editors.get(id); if (!view) return;
+  if (silent) silentUpdates.add(id);
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
+  if (silent) silentUpdates.delete(id);
   view.focus();
 }
 

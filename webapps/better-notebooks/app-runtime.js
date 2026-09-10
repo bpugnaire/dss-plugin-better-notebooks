@@ -699,29 +699,36 @@ async function loadAiModels() {
 }
 function aiHelpMarkup(cell) {
   if (!cell.ai?.open) return '';
-  const response = cell.ai.response ? `<div class="cell-ai-response">${markdownMarkup(cell.ai.response)}</div>` : '';
+  const response = cell.ai.response && cell.ai.mode !== 'rewrite' ? `<article class="cell-ai-response"><span class="cell-ai-message-label">Assistant</span><div>${markdownMarkup(cell.ai.response)}</div></article>` : '';
+  const applying = cell.ai.loading && cell.ai.mode === 'rewrite' ? '<div class="cell-ai-applying">✦ Updating this cell…</div>' : '';
   const error = cell.ai.error ? `<div class="cell-ai-error">${escapeHTML(cell.ai.error)}</div>` : '';
-  return `<section class="cell-ai-panel"><header><span>✦ AI help</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI help">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Explain this cell">Explain</button><button type="button" data-ai-prompt="Find likely bugs and explain how to fix them">Fix bugs</button><button type="button" data-ai-prompt="Suggest a clearer, more idiomatic version while preserving behaviour">Improve</button></div><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Ask about this cell…">${escapeHTML(cell.ai.question || '')}</textarea><footer><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Asking LLM Mesh…' : 'Ask AI'}</button></footer>${error}${response}</section>`;
+  return `<section class="cell-ai-panel"><header><span>✦ AI help</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI help">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Explain this cell" data-ai-mode="answer">Explain</button><button type="button" data-ai-prompt="Fix likely bugs while preserving the intent" data-ai-mode="rewrite">Fix bugs</button><button type="button" data-ai-prompt="Make this clearer and more idiomatic while preserving behaviour" data-ai-mode="rewrite">Improve</button></div><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Ask about this cell…">${escapeHTML(cell.ai.question || '')}</textarea><footer><span>Enter to send · Shift+Enter for a new line</span><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Asking LLM Mesh…' : 'Ask AI'}</button></footer>${applying}${error}${response}</section>`;
 }
 function focusAiQuestion(id) {
   requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] [data-ai-question]`)?.focus());
 }
-async function askCellAi(id, question) {
+async function askCellAi(id, question, mode = 'answer') {
   const cell = getCell(id); if (!cell) return;
   if (!dss.enabled || !aiAssistant.available) {
     cell.ai = { ...(cell.ai || {}), loading: false, error: 'No LLM Mesh coding model is available for this project.' };
     renderCells(); return;
   }
-  cell.ai = { ...(cell.ai || {}), open: true, question, loading: true, error: '', response: '' };
+  cell.ai = { ...(cell.ai || {}), open: true, question, mode, loading: true, error: '', response: '' };
   renderCells();
   try {
     const error = cell.output?.outputs?.find(output => output.output_type === 'error');
     let streamError = '';
-    await dssStreamRequest('ai-help/stream', { modelId: aiAssistant.modelId, notebookName: activeNotebook().name, question, error: error ? `${error.ename || 'Error'}: ${error.evalue || ''}` : '', cell: { language: cell.type, source: cell.source } }, (event, payload) => {
-      if (event === 'delta') { cell.ai = { ...cell.ai, response: `${cell.ai.response || ''}${payload.text || ''}` }; updateRenderedCellOutput(cell); }
+    await dssStreamRequest('ai-help/stream', { modelId: aiAssistant.modelId, notebookName: activeNotebook().name, question, mode, error: error ? `${error.ename || 'Error'}: ${error.evalue || ''}` : '', cell: { language: cell.type, source: cell.source } }, (event, payload) => {
+      if (event === 'delta') {
+        const response = `${cell.ai.response || ''}${payload.text || ''}`;
+        cell.ai = { ...cell.ai, response };
+        if (mode === 'rewrite') { cell.source = response; BetterNotebookEditor.replaceSource(id, response, true); }
+        updateRenderedCellOutput(cell);
+      }
       if (event === 'error') streamError = payload.error || 'LLM Mesh did not complete the request.';
     });
     cell.ai = { ...cell.ai, loading: false, response: cell.ai.response || (streamError ? '' : 'The model returned no text.'), error: streamError };
+    if (mode === 'rewrite' && !streamError && cell.ai.response) { save(); queuePythonCheck(cell); renderOutline(); renderLinkedDatasets(); }
   } catch (error) {
     cell.ai = { ...cell.ai, loading: false, error: error.message || 'AI help failed.' };
   }
@@ -1134,6 +1141,13 @@ cellsEl.addEventListener('input', event => {
   if (!event.target.matches('.code-input')) return;
   autoHeight(event.target); updateCell(event.target.closest('.cell').dataset.id, { source: event.target.value });
 });
+cellsEl.addEventListener('keydown', event => {
+  const question = event.target.closest('[data-ai-question]');
+  if (!question || event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  const id = question.dataset.aiQuestion;
+  askCellAi(id, question.value.trim() || 'Explain this cell and suggest an improvement.');
+});
 cellsEl.addEventListener('change', event => { if (event.target.matches('.cell-check')) selectCell(event.target.closest('.cell').dataset.id, event.target.checked); });
 cellsEl.addEventListener('click', event => {
   const cell = event.target.closest('.cell'); if (!cell) return; const id = cell.dataset.id;
@@ -1141,7 +1155,7 @@ cellsEl.addEventListener('click', event => {
   if (event.target.closest('.ai-help')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: true, loading: false, error: '' }; renderCells(); focusAiQuestion(id); return; }
   if (event.target.closest('[data-ai-close]')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: false }; renderCells(); return; }
   const aiPrompt = event.target.closest('[data-ai-prompt]');
-  if (aiPrompt) { askCellAi(id, aiPrompt.dataset.aiPrompt); return; }
+  if (aiPrompt) { askCellAi(id, aiPrompt.dataset.aiPrompt, aiPrompt.dataset.aiMode || 'answer'); return; }
   const aiSend = event.target.closest('[data-ai-send]');
   if (aiSend) { const question = cell.querySelector(`[data-ai-question="${id}"]`)?.value.trim() || 'Explain this cell and suggest an improvement.'; askCellAi(id, question); return; }
   if (event.target.closest('[data-toggle-section]')) { toggleSection(id); return; }
