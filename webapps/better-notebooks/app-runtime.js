@@ -157,6 +157,29 @@ async function dssRequest(path, options = {}) {
   if (!response.ok) throw new Error(payload.error || `DSS request failed (${response.status})`);
   return payload;
 }
+async function dssStreamRequest(path, body, onEvent) {
+  const response = await fetch(dssBackendUrl(path), {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `DSS request failed (${response.status})`);
+  }
+  if (!response.body) throw new Error('The browser does not support streamed LLM responses.');
+  const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+  const consume = raw => {
+    const lines = raw.split('\n'); const event = lines.find(line => line.startsWith('event:'))?.slice(6).trim() || 'message';
+    const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('\n');
+    if (data) onEvent(event, JSON.parse(data));
+  };
+  while (true) {
+    const { value, done } = await reader.read(); buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary >= 0) { consume(buffer.slice(0, boundary)); buffer = buffer.slice(boundary + 2); boundary = buffer.indexOf('\n\n'); }
+    if (done) break;
+  }
+  if (buffer.trim()) consume(buffer);
+}
 function xsrfToken() {
   const match = document.cookie.match(/(?:^|; )_xsrf=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : '';
@@ -693,8 +716,12 @@ async function askCellAi(id, question) {
   renderCells();
   try {
     const error = cell.output?.outputs?.find(output => output.output_type === 'error');
-    const payload = await dssRequest('ai-help', { method: 'POST', body: JSON.stringify({ modelId: aiAssistant.modelId, notebookName: activeNotebook().name, question, error: error ? `${error.ename || 'Error'}: ${error.evalue || ''}` : '', cell: { language: cell.type, source: cell.source } }) });
-    cell.ai = { ...cell.ai, loading: false, response: payload.response || 'The model returned no text.', error: '' };
+    let streamError = '';
+    await dssStreamRequest('ai-help/stream', { modelId: aiAssistant.modelId, notebookName: activeNotebook().name, question, error: error ? `${error.ename || 'Error'}: ${error.evalue || ''}` : '', cell: { language: cell.type, source: cell.source } }, (event, payload) => {
+      if (event === 'delta') { cell.ai = { ...cell.ai, response: `${cell.ai.response || ''}${payload.text || ''}` }; updateRenderedCellOutput(cell); }
+      if (event === 'error') streamError = payload.error || 'LLM Mesh did not complete the request.';
+    });
+    cell.ai = { ...cell.ai, loading: false, response: cell.ai.response || (streamError ? '' : 'The model returned no text.'), error: streamError };
   } catch (error) {
     cell.ai = { ...cell.ai, loading: false, error: error.message || 'AI help failed.' };
   }

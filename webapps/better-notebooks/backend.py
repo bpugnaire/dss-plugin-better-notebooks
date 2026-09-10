@@ -5,7 +5,7 @@ import json
 import re
 
 import dataiku
-from flask import jsonify, request
+from flask import Response, jsonify, request, stream_with_context
 
 
 NOTEBOOK_NAME = re.compile(r"^[\w .-]{1,100}$", re.UNICODE)
@@ -53,7 +53,12 @@ def runtime_for(runtime_id):
 def available_llms():
     """List text-generation models the current project user can actually use."""
     try:
-        models = current_project().list_llms()
+        all_models = current_project().list_llms()
+        try:
+            models = current_project().list_llms(purpose="TEXT_GENERATION") or all_models
+        except TypeError:
+            # DSS versions prior to the purpose selector are still supported.
+            models = all_models
     except Exception:
         return []
     result = []
@@ -63,6 +68,56 @@ def available_llms():
         if model_id:
             result.append({"id": str(model_id), "label": str(description or model_id)})
     return result
+
+
+def llm_error_message(response):
+    """Extract a useful DSS/provider failure reason without leaking internals."""
+    for attribute in ("message", "error", "error_message", "reason"):
+        value = getattr(response, attribute, None)
+        if value:
+            return str(value)
+    raw = getattr(response, "raw_resp", None) or getattr(response, "data", None)
+    if isinstance(raw, dict):
+        for key in ("message", "error", "errorMessage", "reason"):
+            if raw.get(key):
+                return str(raw[key])
+    return "LLM Mesh did not complete the request. Check that the selected model is configured and that you have Use permission."
+
+
+def prepare_ai_completion(payload):
+    """Validate a focused coding request and build its LLM Mesh completion."""
+    cell = payload.get("cell") or {}
+    source = str(cell.get("source") or "")
+    question = str(payload.get("question") or "Explain this cell and suggest an improvement.").strip()
+    language = str(cell.get("language") or "python").strip().lower()
+    notebook_name = str(payload.get("notebookName") or "this notebook").strip()
+    error = str(payload.get("error") or "").strip()
+    if len(source) > MAX_AI_SOURCE_LENGTH or len(question) > MAX_AI_QUESTION_LENGTH:
+        raise ValueError("The cell or question is too large for AI assistance.")
+    models = available_llms()
+    if not models:
+        raise ValueError("No LLM Mesh text-generation model is available to this project user.")
+    requested_id = str(payload.get("modelId") or configured_coding_llm_id() or models[0]["id"])
+    if not any(model["id"] == requested_id for model in models):
+        raise ValueError("The selected LLM Mesh model is not available in this project.")
+    system_prompt = (
+        "You are a concise Dataiku notebook coding assistant. Help with the provided single cell only. "
+        "Do not claim to have executed code. Explain risks clearly, preserve Dataiku conventions, and return "
+        "Markdown with a suggested replacement only when it materially helps."
+    )
+    user_prompt = "\n\n".join([
+        "Notebook: %s" % notebook_name,
+        "Cell language: %s" % language,
+        "User request: %s" % question,
+        "Cell source:\n```%s\n%s\n```" % (language, source),
+        ("Observed error:\n%s" % error) if error else "",
+    ]).strip()
+    completion = current_project().get_llm(requested_id).new_completion()
+    completion.with_message(system_prompt, role="system")
+    completion.with_message(user_prompt, role="user")
+    completion.settings["temperature"] = 0.2
+    completion.settings["maxOutputTokens"] = 900
+    return requested_id, completion
 
 
 def configured_coding_llm_id():
@@ -285,45 +340,51 @@ def list_llm_models():
 def ask_ai_for_cell_help():
     """Ask an authorized LLM Mesh model for focused, non-executing cell help."""
     payload = request.get_json(force=True) or {}
-    cell = payload.get("cell") or {}
-    source = str(cell.get("source") or "")
-    question = str(payload.get("question") or "Explain this cell and suggest an improvement.").strip()
-    language = str(cell.get("language") or "python").strip().lower()
-    notebook_name = str(payload.get("notebookName") or "this notebook").strip()
-    error = str(payload.get("error") or "").strip()
-    if len(source) > MAX_AI_SOURCE_LENGTH or len(question) > MAX_AI_QUESTION_LENGTH:
-        return jsonify({"error": "The cell or question is too large for AI assistance."}), 400
-    models = available_llms()
-    if not models:
-        return jsonify({"error": "No LLM Mesh text-generation model is available to this project user."}), 400
-    requested_id = str(payload.get("modelId") or configured_coding_llm_id() or models[0]["id"])
-    if not any(model["id"] == requested_id for model in models):
-        return jsonify({"error": "The selected LLM Mesh model is not available in this project."}), 400
-    system_prompt = (
-        "You are a concise Dataiku notebook coding assistant. Help with the provided single cell only. "
-        "Do not claim to have executed code. Explain risks clearly, preserve Dataiku conventions, and return "
-        "Markdown with a suggested replacement only when it materially helps."
-    )
-    user_prompt = "\n\n".join([
-        "Notebook: %s" % notebook_name,
-        "Cell language: %s" % language,
-        "User request: %s" % question,
-        "Cell source:\n```%s\n%s\n```" % (language, source),
-        ("Observed error:\n%s" % error) if error else "",
-    ]).strip()
     try:
-        llm = current_project().get_llm(requested_id)
-        completion = llm.new_completion()
-        completion.with_message(system_prompt, role="system")
-        completion.with_message(user_prompt, role="user")
-        completion.settings["temperature"] = 0.2
-        completion.settings["maxOutputTokens"] = 900
+        requested_id, completion = prepare_ai_completion(payload)
         response = completion.execute()
         if not getattr(response, "success", False):
-            return jsonify({"error": str(getattr(response, "message", None) or "LLM Mesh did not complete the request.")}), 502
+            return jsonify({"error": llm_error_message(response)}), 502
         return jsonify({"modelId": requested_id, "response": response.text})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
     except Exception as error:
         return jsonify({"error": "LLM Mesh request failed: %s" % error}), 502
+
+
+@app.route("/ai-help/stream", methods=["POST"])
+def stream_ai_for_cell_help():
+    """Relay LLM Mesh streamed chunks to the webapp as server-sent events."""
+    payload = request.get_json(force=True) or {}
+    try:
+        requested_id, completion = prepare_ai_completion(payload)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        return jsonify({"error": "LLM Mesh request could not be prepared: %s" % error}), 502
+
+    def event(name, data):
+        return "event: %s\ndata: %s\n\n" % (name, json.dumps(data))
+
+    @stream_with_context
+    def generate():
+        try:
+            streamer = completion.execute_streamed(collect_response=True)
+            chunks = streamer.iter_chunks() if hasattr(streamer, "iter_chunks") else streamer
+            for chunk in chunks:
+                data = getattr(chunk, "data", {}) or {}
+                text = data.get("text", "") if isinstance(data, dict) else ""
+                if text:
+                    yield event("delta", {"text": str(text)})
+            response = getattr(streamer, "response", None)
+            if response is not None and not getattr(response, "success", False):
+                yield event("error", {"error": llm_error_message(response)})
+            else:
+                yield event("done", {"modelId": requested_id})
+        except Exception as error:
+            yield event("error", {"error": "LLM Mesh request failed: %s" % error})
+
+    return Response(generate(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/datasets", methods=["POST"])
