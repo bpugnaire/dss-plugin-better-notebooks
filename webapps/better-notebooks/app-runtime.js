@@ -54,6 +54,7 @@ const state = createNotebookState(loadNotebooks());
 const execution = { runningAll: false, stopRequested: false };
 const dragScroll = { frame: 0, pointerY: null, container: null };
 const pointerDrag = { active: false, candidate: null, preview: null, dropIndex: null };
+const aiAssistant = { models: [], modelId: String(webappConfig.coding_llm_id || localStorage.getItem(storageKey('coding-llm-id')) || ''), available: false };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
 
@@ -647,6 +648,55 @@ function renderSqlConnectionSelector() {
   selector.value = projectContext.sqlConnection;
   selector.title = connections.length ? 'SQL connection for SQL cells' : 'No SQL connection available in this project';
 }
+function renderAiModelSelector() {
+  const selector = document.querySelector('#ai-model-selector'); if (!selector) return;
+  if (!aiAssistant.models.length) {
+    selector.innerHTML = '<option value="">No LLM Mesh model available</option>';
+    selector.disabled = true;
+    return;
+  }
+  selector.disabled = false;
+  selector.innerHTML = aiAssistant.models.map(model => `<option value="${escapeHTML(model.id)}">${escapeHTML(model.label)}</option>`).join('');
+  selector.value = aiAssistant.models.some(model => model.id === aiAssistant.modelId) ? aiAssistant.modelId : aiAssistant.models[0].id;
+}
+async function loadAiModels() {
+  if (!isDssWebappRuntime()) { renderAiModelSelector(); return; }
+  try {
+    const payload = await dssRequest('llm-models');
+    aiAssistant.models = Array.isArray(payload.models) ? payload.models : [];
+    aiAssistant.modelId = aiAssistant.models.some(model => model.id === aiAssistant.modelId)
+      ? aiAssistant.modelId : (payload.defaultModelId || aiAssistant.models[0]?.id || '');
+    aiAssistant.available = Boolean(aiAssistant.modelId);
+    if (aiAssistant.modelId) localStorage.setItem(storageKey('coding-llm-id'), aiAssistant.modelId);
+  } catch (error) {
+    aiAssistant.models = []; aiAssistant.modelId = ''; aiAssistant.available = false;
+    console.warn('LLM Mesh discovery is unavailable.', error);
+  }
+  renderAiModelSelector();
+}
+function aiHelpMarkup(cell) {
+  if (!cell.ai?.open) return '';
+  const response = cell.ai.response ? `<div class="cell-ai-response">${markdownMarkup(cell.ai.response)}</div>` : '';
+  const error = cell.ai.error ? `<div class="cell-ai-error">${escapeHTML(cell.ai.error)}</div>` : '';
+  return `<section class="cell-ai-panel"><header><span>✦ AI help</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI help">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Explain this cell">Explain</button><button type="button" data-ai-prompt="Find likely bugs and explain how to fix them">Fix bugs</button><button type="button" data-ai-prompt="Suggest a clearer, more idiomatic version while preserving behaviour">Improve</button></div><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Ask about this cell…">${escapeHTML(cell.ai.question || '')}</textarea><footer><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Asking LLM Mesh…' : 'Ask AI'}</button></footer>${error}${response}</section>`;
+}
+async function askCellAi(id, question) {
+  const cell = getCell(id); if (!cell) return;
+  if (!dss.enabled || !aiAssistant.available) {
+    cell.ai = { ...(cell.ai || {}), loading: false, error: 'No LLM Mesh coding model is available for this project.' };
+    renderCells(); return;
+  }
+  cell.ai = { ...(cell.ai || {}), open: true, question, loading: true, error: '', response: '' };
+  renderCells();
+  try {
+    const error = cell.output?.outputs?.find(output => output.output_type === 'error');
+    const payload = await dssRequest('ai-help', { method: 'POST', body: JSON.stringify({ modelId: aiAssistant.modelId, notebookName: activeNotebook().name, question, error: error ? `${error.ename || 'Error'}: ${error.evalue || ''}` : '', cell: { language: cell.type, source: cell.source } }) });
+    cell.ai = { ...cell.ai, loading: false, response: payload.response || 'The model returned no text.', error: '' };
+  } catch (error) {
+    cell.ai = { ...cell.ai, loading: false, error: error.message || 'AI help failed.' };
+  }
+  renderCells();
+}
 function outputMarkup(kind, cellId = '') {
   if (kind && typeof kind === 'object' && Array.isArray(kind.outputs)) {
     const rendered = [];
@@ -688,7 +738,9 @@ function outputMarkup(kind, cellId = '') {
 }
 function updateRenderedCellOutput(cell) {
   const node = document.querySelector(`[data-id="${cell.id}"]`); if (!node) return;
-  node.querySelector('.cell-output').innerHTML = cell.type === 'markdown' ? `<div class="markdown-render" tabindex="0">${markdownMarkup(cell.source)}</div>` : outputMarkup(cell.output, cell.id);
+  node.querySelector('.cell-output').innerHTML = cell.type === 'markdown' && !cell.markdownEditing
+    ? `<div class="markdown-render" tabindex="0">${markdownMarkup(cell.source)}</div>`
+    : `${outputMarkup(cell.output, cell.id)}${aiHelpMarkup(cell)}`;
   hydrateRichMime(node).catch(error => console.warn('Could not hydrate rich output.', error));
 }
 function updateRenderedRunState(cell) {
@@ -765,7 +817,7 @@ function renderCells() {
     node.querySelector('.cell-check').checked = state.selected.has(data.id);
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown' && !data.markdownEditing
       ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}${data.collapsed && section?.collapsedCount ? `<button class="collapsed-section-summary" type="button" data-toggle-section="${escapeHTML(data.id)}">${section.collapsedCount} cell${section.collapsedCount === 1 ? '' : 's'} collapsed</button>` : ''}</div>`
-      : outputMarkup(data.output, data.id);
+      : `${outputMarkup(data.output, data.id)}${aiHelpMarkup(data)}`;
     const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
     const meta = node.querySelector('.execution-meta-top');
     const label = executionLabel(data); const icon = executionIcon(executionDetail.status);
@@ -1044,6 +1096,8 @@ function closeCellMenus() {
 }
 
 cellsEl.addEventListener('input', event => {
+  const aiQuestion = event.target.closest('[data-ai-question]');
+  if (aiQuestion) { const cell = getCell(aiQuestion.dataset.aiQuestion); if (cell) cell.ai = { ...(cell.ai || {}), question: aiQuestion.value }; return; }
   if (!event.target.matches('.code-input')) return;
   autoHeight(event.target); updateCell(event.target.closest('.cell').dataset.id, { source: event.target.value });
 });
@@ -1051,6 +1105,12 @@ cellsEl.addEventListener('change', event => { if (event.target.matches('.cell-ch
 cellsEl.addEventListener('click', event => {
   const cell = event.target.closest('.cell'); if (!cell) return; const id = cell.dataset.id;
   setActiveCell(id);
+  if (event.target.closest('.ai-help')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: !target.ai?.open, loading: false, error: '' }; renderCells(); return; }
+  if (event.target.closest('[data-ai-close]')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: false }; renderCells(); return; }
+  const aiPrompt = event.target.closest('[data-ai-prompt]');
+  if (aiPrompt) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: true, question: aiPrompt.dataset.aiPrompt }; renderCells(); return; }
+  const aiSend = event.target.closest('[data-ai-send]');
+  if (aiSend) { const question = cell.querySelector(`[data-ai-question="${id}"]`)?.value.trim() || 'Explain this cell and suggest an improvement.'; askCellAi(id, question); return; }
   if (event.target.closest('[data-toggle-section]')) { toggleSection(id); return; }
   if (event.target.closest('.run-cell')) {
     const current = getCell(id);
@@ -1217,6 +1277,11 @@ document.querySelector('#executor-selector').addEventListener('change', async ev
     setKernelStatus('Runtime switch failed', 'error');
     setSavedState(`Runtime switch failed: ${error.message}`, true); console.warn(error);
   } finally { event.target.disabled = false; }
+});
+document.querySelector('#ai-model-selector')?.addEventListener('change', event => {
+  aiAssistant.modelId = event.target.value;
+  if (aiAssistant.modelId) localStorage.setItem(storageKey('coding-llm-id'), aiAssistant.modelId);
+  setSavedState(`AI help model: ${aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || aiAssistant.modelId}`);
 });
 document.querySelector('#sql-executor-selector').addEventListener('change', event => {
   projectContext.sqlConnection = event.target.value;
@@ -1452,7 +1517,7 @@ async function startDssIntegration() {
     setSavedState('DSS bridge unavailable — native project data was not loaded', true);
     return;
   }
-  await Promise.all([loadProjectContext(), loadDssWorkspace()]);
+  await Promise.all([loadProjectContext(), loadDssWorkspace(), loadAiModels()]);
 }
 state.activeNotebookId = state.notebooks.activeNotebookId || state.notebooks.notebooks[0].id;
 state.cells = activeNotebook().cells;

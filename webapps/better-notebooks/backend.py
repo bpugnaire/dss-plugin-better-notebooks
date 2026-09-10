@@ -10,6 +10,8 @@ from flask import jsonify, request
 
 NOTEBOOK_NAME = re.compile(r"^[\w .-]{1,100}$", re.UNICODE)
 MAX_CHECK_SOURCE_LENGTH = 200_000
+MAX_AI_SOURCE_LENGTH = 100_000
+MAX_AI_QUESTION_LENGTH = 10_000
 
 
 def current_project():
@@ -46,6 +48,28 @@ def available_runtimes():
 
 def runtime_for(runtime_id):
     return next((item for item in available_runtimes() if item["id"] == runtime_id), None)
+
+
+def available_llms():
+    """List text-generation models the current project user can actually use."""
+    try:
+        models = current_project().list_llms()
+    except Exception:
+        return []
+    result = []
+    for model in models:
+        model_id = getattr(model, "id", None) or (model.get("id") if isinstance(model, dict) else None)
+        description = getattr(model, "description", None) or (model.get("description") if isinstance(model, dict) else None)
+        if model_id:
+            result.append({"id": str(model_id), "label": str(description or model_id)})
+    return result
+
+
+def configured_coding_llm_id():
+    try:
+        return str(dataiku.get_webapp_config().get("coding_llm_id") or "").strip()
+    except Exception:
+        return ""
 
 
 def empty_notebook(kernel_spec):
@@ -247,6 +271,59 @@ def check_python():
 @app.route("/python-runtimes", methods=["GET"])
 def list_python_runtimes():
     return jsonify({"runtimes": available_runtimes()})
+
+
+@app.route("/llm-models", methods=["GET"])
+def list_llm_models():
+    models = available_llms()
+    configured = configured_coding_llm_id()
+    default_id = configured if any(model["id"] == configured for model in models) else (models[0]["id"] if models else "")
+    return jsonify({"models": models, "defaultModelId": default_id})
+
+
+@app.route("/ai-help", methods=["POST"])
+def ask_ai_for_cell_help():
+    """Ask an authorized LLM Mesh model for focused, non-executing cell help."""
+    payload = request.get_json(force=True) or {}
+    cell = payload.get("cell") or {}
+    source = str(cell.get("source") or "")
+    question = str(payload.get("question") or "Explain this cell and suggest an improvement.").strip()
+    language = str(cell.get("language") or "python").strip().lower()
+    notebook_name = str(payload.get("notebookName") or "this notebook").strip()
+    error = str(payload.get("error") or "").strip()
+    if len(source) > MAX_AI_SOURCE_LENGTH or len(question) > MAX_AI_QUESTION_LENGTH:
+        return jsonify({"error": "The cell or question is too large for AI assistance."}), 400
+    models = available_llms()
+    if not models:
+        return jsonify({"error": "No LLM Mesh text-generation model is available to this project user."}), 400
+    requested_id = str(payload.get("modelId") or configured_coding_llm_id() or models[0]["id"])
+    if not any(model["id"] == requested_id for model in models):
+        return jsonify({"error": "The selected LLM Mesh model is not available in this project."}), 400
+    system_prompt = (
+        "You are a concise Dataiku notebook coding assistant. Help with the provided single cell only. "
+        "Do not claim to have executed code. Explain risks clearly, preserve Dataiku conventions, and return "
+        "Markdown with a suggested replacement only when it materially helps."
+    )
+    user_prompt = "\n\n".join([
+        "Notebook: %s" % notebook_name,
+        "Cell language: %s" % language,
+        "User request: %s" % question,
+        "Cell source:\n```%s\n%s\n```" % (language, source),
+        ("Observed error:\n%s" % error) if error else "",
+    ]).strip()
+    try:
+        llm = current_project().get_llm(requested_id)
+        completion = llm.new_completion()
+        completion.with_message(system_prompt, role="system")
+        completion.with_message(user_prompt, role="user")
+        completion.settings["temperature"] = 0.2
+        completion.settings["maxOutputTokens"] = 900
+        response = completion.execute()
+        if not getattr(response, "success", False):
+            return jsonify({"error": str(getattr(response, "message", None) or "LLM Mesh did not complete the request.")}), 502
+        return jsonify({"modelId": requested_id, "response": response.text})
+    except Exception as error:
+        return jsonify({"error": "LLM Mesh request failed: %s" % error}), 502
 
 
 @app.route("/datasets", methods=["POST"])

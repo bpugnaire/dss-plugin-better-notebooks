@@ -14,6 +14,13 @@
       "label": "Browser storage namespace",
       "type": "STRING",
       "defaultValue": "better-notebooks"
+    },
+    {
+      "name": "coding_llm_id",
+      "label": "Coding assistant LLM Mesh ID",
+      "type": "STRING",
+      "defaultValue": "",
+      "description": "Optional LLM Mesh ID for cell assistance. Leave blank to use the first text-generation model accessible in this project."
     }
   ],
   "roles": []
