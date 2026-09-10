@@ -117,7 +117,8 @@ def prepare_ai_completion(payload):
     completion = current_project().get_llm(requested_id).new_completion()
     completion.with_message(system_prompt, role="system")
     completion.with_message(user_prompt, role="user")
-    completion.settings["temperature"] = 0.2
+    # Do not force a temperature: newer reasoning models and some managed
+    # OpenAI deployments reject it. Leaving it unset uses the model default.
     completion.settings["maxOutputTokens"] = 900
     return requested_id, completion
 
