@@ -55,8 +55,23 @@ const execution = { runningAll: false, stopRequested: false };
 const dragScroll = { frame: 0, pointerY: null, container: null };
 const pointerDrag = { active: false, candidate: null, preview: null, dropIndex: null };
 const aiAssistant = { models: [], modelId: String(webappConfig.coding_llm_id || localStorage.getItem(storageKey('coding-llm-id')) || ''), available: false };
+const globalAssistant = { open: false, conversations: [], activeConversationId: '' };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
+
+function loadGlobalAssistantConversations() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey('global-ai-conversations')));
+    if (Array.isArray(saved?.conversations) && saved.conversations.length) return saved;
+  } catch { /* Start a fresh local conversation. */ }
+  const first = { id: crypto.randomUUID(), title: 'New conversation', messages: [], proposal: null, updatedAt: Date.now() };
+  return { conversations: [first], activeConversationId: first.id };
+}
+function persistGlobalAssistantConversations() {
+  localStorage.setItem(storageKey('global-ai-conversations'), JSON.stringify({ conversations: globalAssistant.conversations, activeConversationId: globalAssistant.activeConversationId }));
+}
+Object.assign(globalAssistant, loadGlobalAssistantConversations());
+function activeGlobalConversation() { return globalAssistant.conversations.find(conversation => conversation.id === globalAssistant.activeConversationId) || globalAssistant.conversations[0]; }
 
 function loadCells() {
   try { return JSON.parse(localStorage.getItem(storageKey('cells'))) || starterCells; }
@@ -734,6 +749,101 @@ async function askCellAi(id, question, mode = 'answer') {
   }
   renderCells();
 }
+function notebookAssistantSnapshot() {
+  const notebook = activeNotebook();
+  return {
+    name: notebook.name,
+    language: notebook.language,
+    datasets: DATASETS.map(dataset => ({ name: dataset.name, columns: (dataset.columns || []).map(column => column.name) })),
+    cells: state.cells.map(cell => ({ id: cell.id, type: cell.type, source: cell.source })),
+  };
+}
+function sanitizeNotebookProposal(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.changes)) throw new Error('The assistant did not return a notebook change set.');
+  const validTypes = new Set(['python', 'sql', 'markdown']); const ids = new Set(state.cells.map(cell => cell.id));
+  const changes = value.changes.map(change => {
+    if (!change || typeof change !== 'object') return null;
+    if (change.op === 'replace_cell' && ids.has(change.cellId) && validTypes.has(change.type || getCell(change.cellId)?.type) && typeof change.source === 'string') return { op: change.op, cellId: change.cellId, type: change.type || getCell(change.cellId).type, source: change.source };
+    if (change.op === 'insert_after' && ids.has(change.cellId) && validTypes.has(change.cell?.type) && typeof change.cell?.source === 'string') return { op: change.op, cellId: change.cellId, cell: { type: change.cell.type, source: change.cell.source } };
+    if (change.op === 'delete_cell' && ids.has(change.cellId)) return { op: change.op, cellId: change.cellId };
+    if (change.op === 'create_notebook' && typeof change.name === 'string' && change.name.trim() && Array.isArray(change.cells) && change.cells.every(cell => validTypes.has(cell?.type) && typeof cell.source === 'string')) return { op: change.op, name: change.name.trim().slice(0, 100), cells: change.cells.map(cell => ({ type: cell.type, source: cell.source })) };
+    return null;
+  }).filter(Boolean);
+  return { message: String(value.message || 'Notebook change proposal ready.'), changes };
+}
+function proposalDiffMarkup(proposal) {
+  const rows = proposal.changes.map((change, index) => {
+    if (change.op === 'replace_cell') {
+      const before = getCell(change.cellId)?.source || '';
+      return `<article class="proposal-change"><strong>${index + 1}. Edit cell</strong><span>${escapeHTML(change.type)}</span><details><summary>View diff</summary><pre><del>${escapeHTML(before)}</del><ins>${escapeHTML(change.source)}</ins></pre></details></article>`;
+    }
+    if (change.op === 'insert_after') return `<article class="proposal-change"><strong>${index + 1}. Insert ${escapeHTML(change.cell.type)} cell</strong><details><summary>View new cell</summary><pre><ins>${escapeHTML(change.cell.source)}</ins></pre></details></article>`;
+    if (change.op === 'delete_cell') return `<article class="proposal-change"><strong>${index + 1}. Delete cell</strong><details><summary>View removed cell</summary><pre><del>${escapeHTML(getCell(change.cellId)?.source || '')}</del></pre></details></article>`;
+    return `<article class="proposal-change"><strong>${index + 1}. Create notebook</strong><span>${escapeHTML(change.name)}</span><details><summary>View ${change.cells.length} proposed cells</summary><pre><ins>${escapeHTML(change.cells.map(cell => `# ${cell.type}\n${cell.source}`).join('\n\n'))}</ins></pre></details></article>`;
+  }).join('');
+  return `<header><div><span class="eyebrow">PENDING CHANGES</span><strong>${proposal.changes.length} proposed change${proposal.changes.length === 1 ? '' : 's'}</strong></div><button class="icon-button" data-global-ai-reject title="Reject proposal" aria-label="Reject proposal">×</button></header><p>${escapeHTML(proposal.message)}</p>${rows || '<p class="proposal-empty">The assistant did not propose an edit.</p>'}<footer><button class="button ghost" data-global-ai-reject>Reject</button><button class="button primary" data-global-ai-accept ${proposal.changes.length ? '' : 'disabled'}>Accept changes</button></footer>`;
+}
+function renderGlobalAssistant() {
+  const drawer = document.querySelector('#global-ai-drawer'); if (!drawer) return;
+  drawer.classList.toggle('hidden', !globalAssistant.open);
+  const conversation = activeGlobalConversation();
+  const selector = document.querySelector('#global-ai-conversation-selector');
+  selector.innerHTML = globalAssistant.conversations.slice().sort((left, right) => right.updatedAt - left.updatedAt).map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.title)}</option>`).join('');
+  selector.value = conversation.id;
+  const messages = document.querySelector('#global-ai-messages');
+  messages.innerHTML = conversation.messages.map(message => `<article class="global-ai-message ${message.role}"><strong>${message.role === 'user' ? 'You' : 'Notebook AI'}</strong><div>${message.role === 'assistant' ? markdownMarkup(message.content || 'Preparing proposal…') : escapeHTML(message.content)}</div></article>`).join('') || '<p class="global-ai-empty">Ask for an explanation, a notebook-wide refactor, or a new notebook.</p>';
+  messages.scrollTop = messages.scrollHeight;
+  const proposal = document.querySelector('#global-ai-proposal');
+  proposal.classList.toggle('hidden', !conversation.proposal); proposal.innerHTML = conversation.proposal ? proposalDiffMarkup(conversation.proposal) : '';
+}
+function openGlobalAssistant() { globalAssistant.open = true; renderGlobalAssistant(); requestAnimationFrame(() => document.querySelector('#global-ai-input')?.focus()); }
+function closeGlobalAssistant() { globalAssistant.open = false; renderGlobalAssistant(); }
+function parseGlobalAssistantResponse(raw) {
+  const candidate = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  return sanitizeNotebookProposal(JSON.parse(candidate));
+}
+async function sendGlobalAssistantQuestion(question) {
+  const conversation = activeGlobalConversation();
+  if (!question || conversation.loading) return;
+  const userMessage = { role: 'user', content: question };
+  const assistantMessage = { role: 'assistant', content: '' };
+  conversation.messages.push(userMessage, assistantMessage); conversation.loading = true; conversation.proposal = null; conversation.title = conversation.messages.filter(message => message.role === 'user').length === 1 ? question.slice(0, 38) : conversation.title; conversation.updatedAt = Date.now(); persistGlobalAssistantConversations(); renderGlobalAssistant();
+  let streamError = '';
+  try {
+    if (!dss.enabled || !aiAssistant.available) throw new Error('No LLM Mesh coding model is available for this project.');
+    await dssStreamRequest('notebook-assistant/stream', { modelId: aiAssistant.modelId, question, notebook: notebookAssistantSnapshot() }, (event, payload) => {
+      if (event === 'delta') { assistantMessage.content += payload.text || ''; renderGlobalAssistant(); }
+      if (event === 'error') streamError = payload.error || 'Notebook AI did not complete the request.';
+    });
+    if (streamError) throw new Error(streamError);
+    conversation.proposal = parseGlobalAssistantResponse(assistantMessage.content);
+    assistantMessage.content = conversation.proposal.message;
+  } catch (error) {
+    assistantMessage.content = `Unable to prepare a proposal: ${error.message}`;
+  } finally {
+    conversation.loading = false; conversation.updatedAt = Date.now(); persistGlobalAssistantConversations(); renderGlobalAssistant();
+  }
+}
+async function applyGlobalAssistantProposal() {
+  const conversation = activeGlobalConversation(); const proposal = conversation.proposal; if (!proposal?.changes?.length) return;
+  const currentChanges = proposal.changes.filter(change => change.op !== 'create_notebook');
+  currentChanges.forEach(change => {
+    if (change.op === 'replace_cell') { const cell = getCell(change.cellId); if (cell) Object.assign(cell, { type: change.type, source: change.source, output: '', meta: '' }); }
+    if (change.op === 'insert_after') { const index = cellIndex(change.cellId); if (index >= 0) state.cells.splice(index + 1, 0, { ...newCell(change.cell.type), source: change.cell.source }); }
+    if (change.op === 'delete_cell' && state.cells.length > 1) state.cells = state.cells.filter(cell => cell.id !== change.cellId);
+  });
+  if (currentChanges.length) { save(); renderWorkspace(); }
+  for (const change of proposal.changes.filter(change => change.op === 'create_notebook')) {
+    if (dss.enabled) {
+      const payload = await dssRequest('notebooks', { method: 'POST', body: JSON.stringify({ name: change.name, runtimeId: dss.activeRuntimeId }) });
+      const notebook = { id: change.name, name: change.name, language: 'PYTHON', cells: change.cells.map(cell => ({ ...newCell(cell.type), source: cell.source })), open: true, updatedAt: Date.now(), folderId: null, remote: true, loaded: true, dssContent: payload.notebook, runtimeId: runtimeIdFor(payload.notebook.metadata?.kernelspec) };
+      state.notebooks.notebooks.push(notebook); await saveDssNotebook(notebook);
+    } else {
+      state.notebooks.notebooks.push({ id: crypto.randomUUID(), name: change.name, language: 'PYTHON', cells: change.cells.map(cell => ({ ...newCell(cell.type), source: cell.source })), open: true, updatedAt: Date.now(), folderId: null }); persistNotebooks();
+    }
+  }
+  conversation.messages.push({ role: 'assistant', content: 'Accepted the proposed notebook changes.' }); conversation.proposal = null; persistGlobalAssistantConversations(); renderGlobalAssistant();
+}
 function outputMarkup(kind, cellId = '') {
   if (kind && typeof kind === 'object' && Array.isArray(kind.outputs)) {
     const rendered = [];
@@ -1333,6 +1443,18 @@ document.querySelector('#ai-model-selector')?.addEventListener('change', event =
   aiAssistant.modelId = event.target.value;
   if (aiAssistant.modelId) localStorage.setItem(storageKey('coding-llm-id'), aiAssistant.modelId);
   setSavedState(`AI help model: ${aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || aiAssistant.modelId}`);
+});
+document.querySelector('#global-ai-button')?.addEventListener('click', openGlobalAssistant);
+document.querySelector('#close-global-ai')?.addEventListener('click', closeGlobalAssistant);
+document.querySelector('#new-global-ai-conversation')?.addEventListener('click', () => {
+  const conversation = { id: crypto.randomUUID(), title: 'New conversation', messages: [], proposal: null, updatedAt: Date.now() };
+  globalAssistant.conversations.push(conversation); globalAssistant.activeConversationId = conversation.id; persistGlobalAssistantConversations(); renderGlobalAssistant(); document.querySelector('#global-ai-input')?.focus();
+});
+document.querySelector('#global-ai-conversation-selector')?.addEventListener('change', event => { globalAssistant.activeConversationId = event.target.value; persistGlobalAssistantConversations(); renderGlobalAssistant(); });
+document.querySelector('#global-ai-form')?.addEventListener('submit', event => { event.preventDefault(); const input = document.querySelector('#global-ai-input'); const question = input?.value.trim(); if (!question) return; input.value = ''; sendGlobalAssistantQuestion(question); });
+document.querySelector('#global-ai-proposal')?.addEventListener('click', async event => {
+  if (event.target.closest('[data-global-ai-reject]')) { activeGlobalConversation().proposal = null; persistGlobalAssistantConversations(); renderGlobalAssistant(); }
+  if (event.target.closest('[data-global-ai-accept]')) { try { await applyGlobalAssistantProposal(); } catch (error) { setSavedState(`Could not apply AI proposal: ${error.message}`, true); } }
 });
 document.querySelector('#sql-executor-selector').addEventListener('change', event => {
   projectContext.sqlConnection = event.target.value;

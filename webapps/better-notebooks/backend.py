@@ -12,6 +12,7 @@ NOTEBOOK_NAME = re.compile(r"^[\w .-]{1,100}$", re.UNICODE)
 MAX_CHECK_SOURCE_LENGTH = 200_000
 MAX_AI_SOURCE_LENGTH = 100_000
 MAX_AI_QUESTION_LENGTH = 10_000
+MAX_GLOBAL_ASSISTANT_CONTEXT_LENGTH = 180_000
 
 
 def current_project():
@@ -370,6 +371,65 @@ def stream_ai_for_cell_help():
         requested_id, completion = prepare_ai_completion(payload)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        return jsonify({"error": "LLM Mesh request could not be prepared: %s" % error}), 502
+
+    def event(name, data):
+        return "event: %s\ndata: %s\n\n" % (name, json.dumps(data))
+
+    @stream_with_context
+    def generate():
+        try:
+            streamer = completion.execute_streamed(collect_response=True)
+            chunks = streamer.iter_chunks() if hasattr(streamer, "iter_chunks") else streamer
+            for chunk in chunks:
+                data = getattr(chunk, "data", {}) or {}
+                text = data.get("text", "") if isinstance(data, dict) else ""
+                if text:
+                    yield event("delta", {"text": str(text)})
+            response = getattr(streamer, "response", None)
+            if response is not None and not getattr(response, "success", False):
+                yield event("error", {"error": llm_error_message(response)})
+            else:
+                yield event("done", {"modelId": requested_id})
+        except Exception as error:
+            yield event("error", {"error": "LLM Mesh request failed: %s" % error})
+
+    return Response(generate(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/notebook-assistant/stream", methods=["POST"])
+def stream_notebook_assistant():
+    """Plan a reviewable, structured notebook change set with LLM Mesh."""
+    payload = request.get_json(force=True) or {}
+    question = str(payload.get("question") or "").strip()
+    notebook = payload.get("notebook") or {}
+    if not question:
+        return jsonify({"error": "Ask the notebook assistant a question first."}), 400
+    if len(question) > MAX_AI_QUESTION_LENGTH:
+        return jsonify({"error": "The notebook question is too large."}), 400
+    snapshot = json.dumps(notebook, ensure_ascii=False)
+    if len(snapshot) > MAX_GLOBAL_ASSISTANT_CONTEXT_LENGTH:
+        return jsonify({"error": "This notebook is too large to send in one assistant request."}), 400
+    models = available_llms()
+    requested_id = str(payload.get("modelId") or configured_coding_llm_id() or (models[0]["id"] if models else ""))
+    if not models or not any(model["id"] == requested_id for model in models):
+        return jsonify({"error": "No selected LLM Mesh coding model is available for this project."}), 400
+    system_prompt = """You are Better Notebooks' global assistant. Return ONLY valid JSON, never Markdown.
+Use this exact schema:
+{"message":"short explanation","changes":[...]}
+Each change must be one of:
+{"op":"replace_cell","cellId":"existing cell id","source":"complete replacement source","type":"python|sql|markdown"}
+{"op":"insert_after","cellId":"existing cell id","cell":{"type":"python|sql|markdown","source":"source"}}
+{"op":"delete_cell","cellId":"existing cell id"}
+{"op":"create_notebook","name":"new notebook name","cells":[{"type":"python|sql|markdown","source":"source"}]}
+Use only existing cell ids in replace/insert/delete. Never execute code. Propose the smallest useful change set; if no edit is requested, return an empty changes list."""
+    prompt = "User request:\n%s\n\nCurrent notebook snapshot:\n%s" % (question, snapshot)
+    try:
+        completion = current_project().get_llm(requested_id).new_completion()
+        completion.with_message(system_prompt, role="system")
+        completion.with_message(prompt, role="user")
+        completion.settings["maxOutputTokens"] = 3000
     except Exception as error:
         return jsonify({"error": "LLM Mesh request could not be prepared: %s" % error}), 502
 
