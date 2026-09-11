@@ -702,7 +702,7 @@ function aiHelpMarkup(cell) {
   const response = cell.ai.response && cell.ai.mode !== 'rewrite' ? `<article class="cell-ai-response"><span class="cell-ai-message-label">Assistant</span><div>${markdownMarkup(cell.ai.response)}</div></article>` : '';
   const applying = cell.ai.loading && cell.ai.mode === 'rewrite' ? '<div class="cell-ai-applying">✦ Updating this cell…</div>' : '';
   const error = cell.ai.error ? `<div class="cell-ai-error">${escapeHTML(cell.ai.error)}</div>` : '';
-  return `<section class="cell-ai-panel"><header><span>✦ AI help</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI help">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Explain this cell" data-ai-mode="answer">Explain</button><button type="button" data-ai-prompt="Fix likely bugs while preserving the intent" data-ai-mode="rewrite">Fix bugs</button><button type="button" data-ai-prompt="Make this clearer and more idiomatic while preserving behaviour" data-ai-mode="rewrite">Improve</button></div><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Ask about this cell…">${escapeHTML(cell.ai.question || '')}</textarea><footer><span>Enter to send · Shift+Enter for a new line</span><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Asking LLM Mesh…' : 'Ask AI'}</button></footer>${applying}${error}${response}</section>`;
+  return `<section class="cell-ai-panel"><header><span>✦ AI help</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI help">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Explain this cell" data-ai-mode="answer">Explain</button><button type="button" data-ai-prompt="Fix likely bugs while preserving the intent" data-ai-mode="rewrite">Fix bugs</button><button type="button" data-ai-prompt="Make this clearer and more idiomatic while preserving behaviour" data-ai-mode="rewrite">Improve</button></div><div class="cell-ai-compose"><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Ask about this cell · Enter to send · Shift+Enter for a new line">${escapeHTML(cell.ai.question || '')}</textarea><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Asking…' : 'Ask AI'}</button></div>${applying}${error}${response}</section>`;
 }
 function focusAiQuestion(id) {
   requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] [data-ai-question]`)?.focus());
@@ -1188,6 +1188,10 @@ cellsEl.addEventListener('click', event => {
 });
 document.addEventListener('click', event => {
   if (!event.target.closest('.cell-type, .more-cell, .cell-more-menu')) closeCellMenus();
+  if (!event.target.closest('.cell-ai-panel, .ai-help')) {
+    const openAi = state.cells.filter(cell => cell.ai?.open);
+    if (openAi.length) { openAi.forEach(cell => { cell.ai = { ...cell.ai, open: false }; }); renderCells(); }
+  }
 });
 cellsEl.addEventListener('focusin', event => { const cell = event.target.closest('.cell'); if (cell) setActiveCell(cell.dataset.id); });
 // Markdown stays in edit mode after it is opened. Running the cell explicitly
