@@ -203,7 +203,12 @@ async function jupyterRequest(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   const token = xsrfToken();
   if (token) headers['X-XSRFToken'] = token;
-  const response = await fetch(`/jupyter/${path.replace(/^\//, '')}`, { credentials: 'same-origin', headers, ...options });
+  // DSS's embedded Jupyter server uses Tornado's check_xsrf_cookie. Some DSS
+  // versions accept the header, while others require the token as the literal
+  // `_xsrf` request argument (not inside the JSON payload).
+  const separator = path.includes('?') ? '&' : '?';
+  const xsrfArgument = token ? `${separator}_xsrf=${encodeURIComponent(token)}` : '';
+  const response = await fetch(`/jupyter/${path.replace(/^\//, '')}${xsrfArgument}`, { credentials: 'same-origin', headers, ...options });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.message || payload.reason || `Jupyter request failed (${response.status})`);
   return payload;
