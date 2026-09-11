@@ -184,9 +184,28 @@ function xsrfToken() {
   const match = document.cookie.match(/(?:^|; )_xsrf=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : '';
 }
+let jupyterXsrfBootstrap = null;
+async function ensureJupyterXsrfToken() {
+  const existing = xsrfToken();
+  if (existing) return existing;
+  // On a fresh DSS login, the Jupyter application's XSRF cookie is not always
+  // created until its landing page is visited. Do that in the background so a
+  // Better Notebooks user does not have to open a separate native notebook.
+  if (!jupyterXsrfBootstrap) {
+    jupyterXsrfBootstrap = fetch('/jupyter/tree', { credentials: 'same-origin', redirect: 'follow' })
+      .catch(error => console.warn('Could not initialize the DSS Jupyter session.', error))
+      .finally(() => { jupyterXsrfBootstrap = null; });
+  }
+  await jupyterXsrfBootstrap;
+  return xsrfToken();
+}
 async function jupyterRequest(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-  const token = xsrfToken();
+  const method = String(options.method || 'GET').toUpperCase();
+  const token = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) ? await ensureJupyterXsrfToken() : xsrfToken();
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !token) {
+    throw new Error('DSS is still initializing its Jupyter session. Please retry in a moment.');
+  }
   if (token) headers['X-XSRFToken'] = token;
   // DSS's embedded Jupyter server uses Tornado's check_xsrf_cookie. Some DSS
   // versions accept the header, while others require the token as the literal
