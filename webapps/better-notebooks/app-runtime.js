@@ -252,12 +252,18 @@ async function connectDssKernel(notebook) {
   if (dss.kernel?.socket) dss.kernel.socket.close();
   await flushDssSave(notebook);
   setKernelStatus('Starting…', 'starting');
-  const session = await jupyterRequest('api/sessions', {
-    method: 'POST', body: JSON.stringify({
-      path: `${projectContext.key}/${notebook.name}.ipynb`, type: 'notebook', name: '',
-      kernel: { id: null, name: notebookKernelName(notebook) },
-    }),
-  });
+  const kernelName = notebookKernelName(notebook);
+  let session;
+  try {
+    session = await jupyterRequest('api/sessions', {
+      method: 'POST', body: JSON.stringify({
+        path: `${projectContext.key}/${notebook.name}.ipynb`, type: 'notebook', name: '',
+        kernel: { id: null, name: kernelName },
+      }),
+    });
+  } catch (error) {
+    throw new Error(`DSS could not start the \"${kernelName}\" kernel: ${error.message}`);
+  }
   if (!session.kernel?.id) throw new Error('DSS started a session without a kernel.');
   const sessionId = crypto.randomUUID();
   const socket = new WebSocket(jupyterSocketUrl(session.kernel.id, sessionId));
@@ -451,9 +457,45 @@ function cellsFromDss(raw) {
 }
 function runtimeIdFor(kernelSpec) {
   const name = kernelSpec?.name || '';
+  const discovered = dss.runtimes.find(runtime => runtime.kernelSpec?.name === name);
+  if (discovered) return discovered.id;
   if (name === 'python3') return 'dss_builtin';
   const match = name.match(/^py-dku-venv-(.+)$/);
   return match ? match[1] : 'dss_builtin';
+}
+function isSqlConnection(connection) {
+  const type = String(connection?.type || '').toLowerCase();
+  // DSS returns every connection here: LLM Mesh/OpenAI connections are not
+  // usable by SQL cells even though they are not filesystem connections.
+  return ['sql', 'postgres', 'mysql', 'mariadb', 'oracle', 'snowflake', 'redshift', 'bigquery', 'hive', 'impala', 'athena', 'vertica', 'teradata', 'db2', 'databricks', 'clickhouse', 'trino', 'presto', 'synapse'].some(kind => type.includes(kind));
+}
+function jupyterKernelSpec(name, value) {
+  const spec = value?.spec || value || {};
+  return { name, display_name: spec.display_name || name, language: spec.language || 'python' };
+}
+async function resolveDssRuntimeKernelSpecs() {
+  // Code-env API responses provide an environment name, not necessarily the
+  // actual Jupyter kernelspec name. Ask DSS's Jupyter server so switching
+  // environments works across DSS versions and custom code-env names.
+  let payload;
+  try { payload = await jupyterRequest('api/kernelspecs'); }
+  catch (error) { console.warn('Could not discover DSS Jupyter kernelspecs; keeping compatibility names.', error); return; }
+  const specs = Object.entries(payload?.kernelspecs || {}).map(([name, value]) => jupyterKernelSpec(name, value));
+  if (!specs.length) return;
+  dss.runtimes = dss.runtimes.map(runtime => {
+    const desired = String(runtime.id || '').toLowerCase();
+    const expected = String(runtime.kernelSpec?.name || '').toLowerCase();
+    const match = specs.map(spec => {
+      const name = spec.name.toLowerCase(); const label = spec.display_name.toLowerCase();
+      let score = 0;
+      if (runtime.id === 'dss_builtin' && spec.name === 'python3') score = 100;
+      else if (name === expected) score = 95;
+      else if (label === String(runtime.label || '').toLowerCase()) score = 90;
+      else if (desired && (name.includes(desired) || label.includes(desired))) score = 70;
+      return { spec, score };
+    }).sort((a, b) => b.score - a.score)[0];
+    return match?.score ? { ...runtime, kernelSpec: match.spec } : runtime;
+  });
 }
 function renderRuntimeSelector() {
   const selector = document.querySelector('#executor-selector');
@@ -488,6 +530,7 @@ async function loadDssWorkspace() {
     ]);
     dss.enabled = true;
     dss.runtimes = runtimePayload.runtimes || [];
+    await resolveDssRuntimeKernelSpecs();
     const savedLayout = savedNotebookLayout();
     const folderByNotebookId = new Map((savedLayout.notebooks || []).map(item => [item.id, item.folderId ?? null]));
     const notebooks = (notebookPayload.notebooks || []).map((item, index) => ({
@@ -542,7 +585,7 @@ async function loadProjectContext() {
       connection: dataset.connection || '', tableName: dataset.tableName || '',
     }));
     projectContext.connections = Array.isArray(payload.connections) ? payload.connections : [];
-    const sqlConnections = projectContext.connections.filter(connection => connection.type !== 'Filesystem');
+    const sqlConnections = projectContext.connections.filter(isSqlConnection);
     if (!sqlConnections.some(connection => connection.name === projectContext.sqlConnection)) projectContext.sqlConnection = sqlConnections[0]?.name || '';
     projectContext.managedConnection = projectContext.sqlConnection || projectContext.connections.find(connection => connection.name === 'filesystem_managed')?.name || 'filesystem_managed';
     renderProjectContext();
@@ -664,7 +707,7 @@ function renderLinkedDatasets() {
 function renderSqlConnectionSelector() {
   const selector = document.querySelector('#sql-executor-selector');
   if (!selector) return;
-  const connections = projectContext.connections.filter(connection => connection.type !== 'Filesystem');
+  const connections = projectContext.connections.filter(isSqlConnection);
   selector.innerHTML = connections.length
     ? connections.map(connection => `<option value="${escapeHTML(connection.name)}">${escapeHTML(connection.name)}</option>`).join('')
     : '<option value="">No SQL connection</option>';
@@ -1320,11 +1363,15 @@ document.querySelector('#executor-selector').addEventListener('change', async ev
     event.target.disabled = true;
     dss.activeRuntimeId = requestedRuntime; notebook.runtimeId = requestedRuntime;
     setSavedState('Saving environment and restarting kernel…');
-    await flushDssSave(notebook);
     await restartKernelWithRuntime(notebook);
     setSavedState(`Kernel restarted with ${requestedLabel}`);
   } catch (error) {
     dss.activeRuntimeId = previousRuntime; notebook.runtimeId = previousRuntime; event.target.value = previousRuntime;
+    // connectDssKernel persists the requested kernelspec before creating its
+    // session. Restore the previous one too, otherwise every later load would
+    // retry the failed runtime even though the selector shows the old value.
+    try { await flushDssSave(notebook); }
+    catch (rollbackError) { console.warn('Could not restore the previous runtime after a failed switch.', rollbackError); }
     setKernelStatus('Runtime switch failed', 'error');
     setSavedState(`Runtime switch failed: ${error.message}`, true); console.warn(error);
   } finally { event.target.disabled = false; }
