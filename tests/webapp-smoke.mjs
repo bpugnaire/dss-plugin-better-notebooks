@@ -7,6 +7,8 @@ const requiredMarkup = ['id="cells"', 'id="notebook-tabs"', 'id="run-all"', 'id=
 const requiredRuntime = ['loadDssWorkspace', 'cellsFromDss', 'executeInDssKernel', 'completeInDssKernel', 'exportNotebook', 'persistDraft', 'showRecoveryChoice', 'executionState', 'beginPointerDrag', 'moveCellsToIndex'];
 for (const selector of requiredMarkup) if (!html.includes(selector)) throw new Error(`Missing webapp markup: ${selector}`);
 for (const symbol of requiredRuntime) if (!runtime.includes(symbol)) throw new Error(`Missing webapp runtime capability: ${symbol}`);
+if (html.includes('class="cell-diagnostic"')) throw new Error('Syntax diagnostics must be inline CodeMirror annotations, not cell output strips.');
+if (!runtime.includes('setDiagnostic(cell.id')) throw new Error('Missing CodeMirror syntax diagnostic integration.');
 if (runtime.includes("cellsEl.addEventListener('dragstart'")) throw new Error('Cell reordering must not use native HTML drag events');
 if (!browserSmoke.includes('__betterNotebooksSmoke')) throw new Error('Missing browser-executed smoke probe');
 console.log('Better Notebooks browser-contract smoke check passed.');

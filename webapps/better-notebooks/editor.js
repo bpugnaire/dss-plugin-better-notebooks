@@ -202,8 +202,13 @@ export function setDiagnostic(id, diagnostic) {
   const all = Array.isArray(diagnostic) ? diagnostic : diagnostic ? [diagnostic] : [];
   const diagnostics = all.map(item => {
     const line = Math.min(Math.max(item.line || 1, 1), view.state.doc.lines);
-    const from = Math.min(view.state.doc.line(line).from + Math.max((item.column || 1) - 1, 0), view.state.doc.length);
-    return { from, to: Math.min(from + Math.max(item.length || 1, 1), view.state.doc.length), severity: item.severity || 'error', message: item.message || 'Diagnostic' };
+    const lineInfo = view.state.doc.line(line);
+    const from = Math.min(lineInfo.from + Math.max((item.column || 1) - 1, 0), lineInfo.to);
+    // Parser errors identify a position but not a token length. Make the
+    // malformed remainder of that line visibly actionable; symbol warnings
+    // continue to use their explicit word length.
+    const length = item.length || Math.max(1, lineInfo.to - from);
+    return { from, to: Math.min(from + Math.max(length, 1), lineInfo.to || view.state.doc.length), severity: item.severity || 'error', message: item.message || 'Diagnostic' };
   });
   // `setDiagnostics` returns a transaction specification, not a StateEffect.
   // Dispatching it as an effect aborts CodeMirror's render loop after the

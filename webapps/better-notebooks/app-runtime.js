@@ -489,8 +489,6 @@ function queuePythonCheck(cell) {
       cell.diagnostic = result.valid ? null : result;
     } catch (error) { cell.diagnostic = { message: 'Syntax check unavailable' }; }
     BetterNotebookEditor.setDiagnostic(cell.id, [...(cell.diagnostic ? [cell.diagnostic] : []), ...staticDiagnostics(cell.id)]);
-    const diagnostic = document.querySelector(`[data-id="${cell.id}"] .cell-diagnostic`);
-    if (diagnostic) { diagnostic.hidden = !cell.diagnostic; diagnostic.textContent = cell.diagnostic ? `Line ${cell.diagnostic.line || '?'}: ${cell.diagnostic.message}` : ''; }
   }, 500));
 }
 function cellsFromDss(raw) {
@@ -681,7 +679,7 @@ function staticDiagnostics(cellId) {
     words.forEach(word => {
       if (known.has(word) || declared.has(word) || builtin.has(word) || /^(import|from|as|def|class|return|for|in|if|else|elif|while|and|or|not|is|with|try|except|pass|lambda|yield|await|async)$/i.test(word)) return;
       if (/^[A-Z]/.test(word) || line.includes(`.${word}`)) return;
-      if (!findings.some(item => item.line === index + 1 && item.message.includes(word))) findings.push({ line: index + 1, column: line.indexOf(word) + 1, severity: 'warning', message: `“${word}” is not defined in an earlier cell` });
+      if (!findings.some(item => item.line === index + 1 && item.message.includes(word))) findings.push({ line: index + 1, column: line.indexOf(word) + 1, length: word.length, severity: 'warning', message: `“${word}” is not defined in an earlier cell` });
     });
   });
   return findings.slice(0, 6);
@@ -1190,7 +1188,6 @@ function renderCells() {
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown' && !data.markdownEditing
       ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}${data.collapsed && section?.collapsedCount ? `<button class="collapsed-section-summary" type="button" data-toggle-section="${escapeHTML(data.id)}">${section.collapsedCount} cell${section.collapsedCount === 1 ? '' : 's'} collapsed</button>` : ''}</div>`
       : outputMarkup(data.output, data.id);
-    const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
     const meta = node.querySelector('.execution-meta-top');
     const label = executionLabel(data); const icon = executionIcon(executionDetail.status);
     meta.textContent = label ? `${icon ? `${icon} ` : ''}${label}` : '';
@@ -1228,12 +1225,15 @@ function renderCells() {
   });
   renderToolbar(); renderOutline(); renderCellMinimap();
   hydrateRichMime(cellsEl).catch(error => console.warn('Could not hydrate rich outputs.', error));
-  // Removing the focused CodeMirror node can cause browsers to compensate by
-  // scrolling after the first frame. Restore again after layout settles.
+  // Removing a focused CodeMirror node can cause the browser to compensate
+  // after one or more layout frames. This is most visible when the final cell
+  // changes height because there is no content below it. Reapply the captured
+  // viewport after those deferred layouts without calling scrollIntoView.
   requestAnimationFrame(() => {
     restoreRenderScroll(scrollPositions);
     requestAnimationFrame(() => restoreRenderScroll(scrollPositions));
-    window.setTimeout(() => restoreRenderScroll(scrollPositions), 0);
+    window.setTimeout(() => restoreRenderScroll(scrollPositions), 50);
+    window.setTimeout(() => restoreRenderScroll(scrollPositions), 180);
   });
 }
 function renderToolbar() {
