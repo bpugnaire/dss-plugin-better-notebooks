@@ -1385,7 +1385,15 @@ async function deleteActiveNotebook() {
 function addFolder() { const modal = document.querySelector('#folder-modal'); modal.classList.remove('hidden'); requestAnimationFrame(() => document.querySelector('#folder-name-input').focus()); }
 function updateCell(id, patch) { const cell = getCell(id); Object.assign(cell, patch); save(); queuePythonCheck(cell); renderOutline(); renderLinkedDatasets(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
-function focusCell(id, preventScroll = false) { requestAnimationFrame(() => BetterNotebookEditor.focus(id, preventScroll)); }
+function focusCell(id, preventScroll = false) {
+  requestAnimationFrame(() => {
+    BetterNotebookEditor.focus(id, preventScroll);
+    // A cell run rebuilds CodeMirror and then restores the viewport over the
+    // following layout frames. Focus once more after that work so Shift+Enter
+    // always leaves the caret in the next executable cell.
+    requestAnimationFrame(() => { if (state.activeCellId === id) BetterNotebookEditor.focus(id, preventScroll); });
+  });
+}
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
 async function runCell(id) {
   const cell = getCell(id); if (!cell) return;
@@ -1414,10 +1422,10 @@ async function runCell(id) {
   }
 }
 async function runAndAdvance(id) {
-  const nextId = state.cells[cellIndex(id) + 1]?.id;
+  const nextCodeCell = state.cells.slice(cellIndex(id) + 1).find(cell => cell.type !== 'markdown');
   const succeeded = await runCell(id);
   if (!succeeded) return;
-  if (nextId) { setActiveCell(nextId); focusCell(nextId); return; }
+  if (nextCodeCell) { setActiveCell(nextCodeCell.id); focusCell(nextCodeCell.id); return; }
   const newCodeCell = newCell('python'); newCodeCell.source = ''; state.cells.push(newCodeCell); state.activeCellId = newCodeCell.id; save(); renderCells(); focusCell(newCodeCell.id, true);
 }
 function selectCell(id, selected) { selected ? state.selected.add(id) : state.selected.delete(id); renderCells(); }
