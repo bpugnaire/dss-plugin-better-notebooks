@@ -792,21 +792,24 @@ async function loadAiModels() {
 }
 function aiHelpMarkup(cell) {
   if (!cell.ai?.open) return '';
-  const response = cell.ai.response && cell.ai.mode !== 'rewrite' ? `<article class="cell-ai-response"><span class="cell-ai-message-label">Assistant</span><div>${markdownMarkup(cell.ai.response)}</div></article>` : '';
-  const applying = cell.ai.loading && cell.ai.mode === 'rewrite' ? '<div class="cell-ai-applying">✦ Updating this cell…</div>' : '';
+  const applying = cell.ai.loading ? '<div class="cell-ai-applying">✦ Updating this cell…</div>' : '';
   const error = cell.ai.error ? `<div class="cell-ai-error">${escapeHTML(cell.ai.error)}</div>` : '';
-  return `<section class="cell-ai-panel"><header><span>✦ AI help</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI help">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Explain this cell" data-ai-mode="answer">Explain</button><button type="button" data-ai-prompt="Fix likely bugs while preserving the intent" data-ai-mode="rewrite">Fix bugs</button><button type="button" data-ai-prompt="Make this clearer and more idiomatic while preserving behaviour" data-ai-mode="rewrite">Improve</button></div><div class="cell-ai-compose"><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Ask about this cell · Enter to send · Shift+Enter for a new line">${escapeHTML(cell.ai.question || '')}</textarea><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Asking…' : 'Ask AI'}</button></div>${applying}${error}${response}</section>`;
+  const review = cell.ai.proposedSource && !cell.ai.loading
+    ? `<div class="cell-ai-review"><span>AI edit ready for review</span><div><button type="button" data-ai-review-action="reject" data-ai-review-cell="${escapeHTML(cell.id)}">Reject</button><button type="button" class="accept" data-ai-review-action="accept" data-ai-review-cell="${escapeHTML(cell.id)}">Accept</button></div></div>` : '';
+  return `<section class="cell-ai-panel"><header><span>✦ AI edit</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI edit">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Fix likely bugs while preserving the intent">Fix bugs</button><button type="button" data-ai-prompt="Make this clearer and more idiomatic while preserving behaviour">Improve</button><button type="button" data-ai-prompt="Add concise documentation where useful">Document</button></div><div class="cell-ai-compose"><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Describe the change · Enter to apply · Shift+Enter for a new line">${escapeHTML(cell.ai.question || '')}</textarea><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Applying…' : 'Apply'}</button></div>${applying}${error}${review}</section>`;
 }
 function focusAiQuestion(id) {
   requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] [data-ai-question]`)?.focus());
 }
-async function askCellAi(id, question, mode = 'answer') {
+async function askCellAi(id, question, mode = 'rewrite') {
   const cell = getCell(id); if (!cell) return;
   if (!dss.enabled || !aiAssistant.available) {
     cell.ai = { ...(cell.ai || {}), loading: false, error: 'No LLM Mesh coding model is available for this project.' };
     renderCells(); return;
   }
-  cell.ai = { ...(cell.ai || {}), open: true, question, mode, loading: true, error: '', response: '' };
+  const baseSource = cell.source;
+  // The request is already in flight; do not retain it in the compact editor.
+  cell.ai = { ...(cell.ai || {}), open: true, question: '', mode: 'rewrite', loading: true, error: '', response: '', baseSource, proposedSource: '' };
   renderCells();
   try {
     const error = cell.output?.outputs?.find(output => output.output_type === 'error');
@@ -814,16 +817,31 @@ async function askCellAi(id, question, mode = 'answer') {
     await dssStreamRequest('ai-help/stream', { modelId: aiAssistant.modelId, notebookName: activeNotebook().name, question, mode, error: error ? `${error.ename || 'Error'}: ${error.evalue || ''}` : '', cell: { language: cell.type, source: cell.source } }, (event, payload) => {
       if (event === 'delta') {
         const response = `${cell.ai.response || ''}${payload.text || ''}`;
-        cell.ai = { ...cell.ai, response };
-        if (mode === 'rewrite') { cell.source = response; BetterNotebookEditor.replaceSource(id, response, true); }
-        updateRenderedCellOutput(cell);
+        cell.ai = { ...cell.ai, response, proposedSource: response };
+        BetterNotebookEditor.setReviewEdits(id, minimalReplacementEdit(baseSource, response));
       }
       if (event === 'error') streamError = payload.error || 'LLM Mesh did not complete the request.';
     });
-    cell.ai = { ...cell.ai, loading: false, response: cell.ai.response || (streamError ? '' : 'The model returned no text.'), error: streamError };
-    if (mode === 'rewrite' && !streamError && cell.ai.response) { save(); queuePythonCheck(cell); renderOutline(); renderLinkedDatasets(); }
+    const proposedSource = streamError ? '' : cell.ai.response;
+    cell.ai = { ...cell.ai, loading: false, response: cell.ai.response || (streamError ? '' : 'The model returned no text.'), proposedSource, error: streamError };
   } catch (error) {
     cell.ai = { ...cell.ai, loading: false, error: error.message || 'AI help failed.' };
+  }
+  renderCells();
+}
+function resolveCellAiReview(id, accept) {
+  const cell = getCell(id); const review = cell?.ai;
+  if (!cell || !review?.proposedSource) return;
+  if (accept && cell.source !== review.baseSource) {
+    cell.ai = { ...review, error: 'This cell changed while the AI edit was being prepared. Reject it and ask again.' };
+    renderCells(); return;
+  }
+  if (accept) {
+    cell.source = review.proposedSource; cell.output = ''; cell.meta = '';
+    cell.ai = { ...review, proposedSource: '', baseSource: '', response: '', error: '' };
+    queuePythonCheck(cell); save(); renderOutline(); renderLinkedDatasets();
+  } else {
+    cell.ai = { ...review, proposedSource: '', baseSource: '', response: '', error: '' };
   }
   renderCells();
 }
@@ -839,12 +857,71 @@ function notebookAssistantSnapshot() {
     cells: state.cells.map(cell => ({ id: cell.id, type: cell.type, source: cell.source })),
   };
 }
+function validatedLineEdits(source, edits) {
+  if (!Array.isArray(edits) || !edits.length) return [];
+  const lines = String(source || '').split('\n'); const accepted = [];
+  for (const edit of edits) {
+    const startLine = Number(edit?.startLine); const endLine = Number(edit?.endLine);
+    if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 1 || endLine < startLine || endLine > lines.length || typeof edit.expected !== 'string' || typeof edit.replacement !== 'string') continue;
+    const expected = lines.slice(startLine - 1, endLine).join('\n');
+    if (expected !== edit.expected || expected === edit.replacement || accepted.some(previous => startLine <= previous.endLine && endLine >= previous.startLine)) continue;
+    accepted.push({ startLine, endLine, expected, replacement: edit.replacement });
+  }
+  return accepted.sort((left, right) => left.startLine - right.startLine);
+}
+function applyLineEdits(source, edits) {
+  const lines = String(source || '').split('\n');
+  [...edits].sort((left, right) => right.startLine - left.startLine).forEach(edit => lines.splice(edit.startLine - 1, edit.endLine - edit.startLine + 1, ...edit.replacement.split('\n')));
+  return lines.join('\n');
+}
+function minimalReplacementEdit(beforeSource, afterSource) {
+  if (beforeSource === afterSource || !String(beforeSource || '').length) return [];
+  const before = String(beforeSource).split('\n'); const after = String(afterSource || '').split('\n');
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix += 1;
+  // A pure append has no existing line range. Attach it to the preceding line
+  // so it remains a valid, reviewable edit rather than falling back to a full
+  // cell rewrite.
+  if (prefix === before.length) {
+    const last = before.length - 1;
+    return [{ startLine: last + 1, endLine: last + 1, expected: before[last], replacement: `${before[last]}\n${after.slice(prefix).join('\n')}` }];
+  }
+  const startLine = prefix + 1; const endLine = before.length - suffix;
+  if (endLine < startLine) {
+    const inserted = after.slice(prefix, after.length - suffix).join('\n');
+    // The protocol uses a non-empty line range. Anchor a middle insertion to
+    // its neighboring source line, retaining that line in the replacement.
+    if (prefix > 0) {
+      const anchor = before[prefix - 1];
+      return validatedLineEdits(beforeSource, [{ startLine: prefix, endLine: prefix, expected: anchor, replacement: `${anchor}\n${inserted}` }]);
+    }
+    const anchor = before[0];
+    return validatedLineEdits(beforeSource, [{ startLine: 1, endLine: 1, expected: anchor, replacement: `${inserted}\n${anchor}` }]);
+  }
+  const expected = before.slice(prefix, before.length - suffix).join('\n');
+  const replacement = after.slice(prefix, after.length - suffix).join('\n');
+  return validatedLineEdits(beforeSource, [{ startLine, endLine, expected, replacement }]);
+}
 function sanitizeNotebookProposal(value) {
   if (!value || typeof value !== 'object' || !Array.isArray(value.changes)) throw new Error('The assistant did not return a notebook change set.');
   const validTypes = new Set(['python', 'sql', 'markdown']); const ids = new Set(state.cells.map(cell => cell.id));
   const changes = value.changes.map(change => {
     if (!change || typeof change !== 'object') return null;
-    if (change.op === 'replace_cell' && ids.has(change.cellId) && validTypes.has(change.type || getCell(change.cellId)?.type) && typeof change.source === 'string') return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, type: change.type || getCell(change.cellId).type, source: change.source, beforeSource: getCell(change.cellId)?.source || '' };
+    if (change.op === 'edit_cell' && ids.has(change.cellId)) {
+      const cell = getCell(change.cellId); const edits = validatedLineEdits(cell?.source, change.edits);
+      return edits.length ? { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, type: cell.type, edits } : null;
+    }
+    if (change.op === 'replace_cell' && ids.has(change.cellId) && validTypes.has(change.type || getCell(change.cellId)?.type) && typeof change.source === 'string') {
+      const cell = getCell(change.cellId); const beforeSource = cell?.source || '';
+      if (change.source === beforeSource) return null;
+      const edits = minimalReplacementEdit(beforeSource, change.source);
+      // Normalize model fallbacks into an in-editor patch. Even a broad edit
+      // stays in the cell, rather than reverting to the old under-cell card.
+      if (edits.length) return { id: crypto.randomUUID(), op: 'edit_cell', cellId: change.cellId, type: cell.type, edits };
+      return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, type: change.type || cell.type, source: change.source, beforeSource };
+    }
     if (change.op === 'insert_after' && ids.has(change.cellId) && validTypes.has(change.cell?.type) && typeof change.cell?.source === 'string') return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, cell: { type: change.cell.type, source: change.cell.source } };
     if (change.op === 'delete_cell' && ids.has(change.cellId)) return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, beforeSource: getCell(change.cellId)?.source || '' };
     if (change.op === 'create_notebook' && typeof change.name === 'string' && change.name.trim() && Array.isArray(change.cells) && change.cells.every(cell => validTypes.has(cell?.type) && typeof cell.source === 'string')) return { id: crypto.randomUUID(), op: change.op, name: change.name.trim().slice(0, 100), cells: change.cells.map(cell => ({ type: cell.type, source: cell.source })) };
@@ -859,6 +936,7 @@ function stagedProposal() {
 function proposalLineCounts(proposal) {
   return (proposal?.changes || []).reduce((counts, change) => {
     const lines = source => String(source || '').split('\n').filter(Boolean).length;
+    if (change.op === 'edit_cell') change.edits.forEach(edit => { counts.added += lines(edit.replacement); counts.removed += lines(edit.expected); });
     if (change.op === 'replace_cell') { counts.added += lines(change.source); counts.removed += lines(change.beforeSource); }
     if (change.op === 'insert_after') counts.added += lines(change.cell.source);
     if (change.op === 'delete_cell') counts.removed += lines(change.beforeSource);
@@ -875,14 +953,32 @@ function proposalDiffMarkup(proposal) {
   return `<header><div><span class="eyebrow">STAGED NOTEBOOK DIFF</span><strong>${escapeHTML(notebook?.name || 'notebook')}.${extension}</strong></div><button class="icon-button" data-global-ai-reject title="Reject all staged changes" aria-label="Reject all staged changes">×</button></header><div class="proposal-file-summary"><strong>${proposal.changes.length} staged cell change${proposal.changes.length === 1 ? '' : 's'}</strong><span class="diff-added">+${counts.added}</span><span class="diff-removed">−${counts.removed}</span></div><p>${escapeHTML(proposal.message)}${proposal.changes.length ? ' Review each change directly in the notebook.' : ''}</p>${actions}`;
 }
 function inlineProposalMarkup(change) {
+  if (change.op === 'edit_cell') return '';
   if (change.op === 'replace_cell') return `<section class="inline-ai-review replace" data-staged-change="${escapeHTML(change.id)}"><header><span>✦ AI proposed edit</span><span class="staged-kind">${escapeHTML(change.type)}</span><div><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Reject</button><button class="accept" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Accept</button></div></header><div class="inline-ai-diff"><pre><del>${escapeHTML(change.beforeSource)}</del><ins>${escapeHTML(change.source)}</ins></pre></div></section>`;
   if (change.op === 'delete_cell') return `<section class="inline-ai-review delete" data-staged-change="${escapeHTML(change.id)}"><header><span>✦ AI proposed deletion</span><div><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Keep cell</button><button class="accept danger" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Delete cell</button></div></header><pre><del>${escapeHTML(change.beforeSource)}</del></pre></section>`;
   if (change.op === 'insert_after') return `<section class="inline-ai-review insert" data-staged-change="${escapeHTML(change.id)}"><header><span>✦ AI proposed new ${escapeHTML(change.cell.type)} cell</span><div><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Reject</button><button class="accept" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Add cell</button></div></header><pre><ins>${escapeHTML(change.cell.source)}</ins></pre></section>`;
   return '';
 }
+function stagedEditControlsMarkup(change) {
+  return `<div class="cell-ai-staged-controls" data-staged-change="${escapeHTML(change.id)}"><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Reject</button><button class="accept" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Accept</button></div>`;
+}
 function globalConversationPreview(conversation) {
   const userMessages = conversation.messages.filter(message => message.role === 'user');
   return userMessages.length ? userMessages[userMessages.length - 1].content : 'No messages yet';
+}
+function deleteGlobalAssistantConversation(id) {
+  const existing = globalAssistant.conversations.find(conversation => conversation.id === id);
+  if (!existing) return;
+  globalAssistant.conversations = globalAssistant.conversations.filter(conversation => conversation.id !== id);
+  if (!globalAssistant.conversations.length) {
+    const replacement = { id: crypto.randomUUID(), title: 'New conversation', messages: [], proposal: null, updatedAt: Date.now() };
+    globalAssistant.conversations.push(replacement);
+  }
+  if (globalAssistant.activeConversationId === id) {
+    globalAssistant.activeConversationId = globalAssistant.conversations.slice().sort((left, right) => right.updatedAt - left.updatedAt)[0].id;
+  }
+  globalAssistant.view = 'list';
+  persistGlobalAssistantConversations(); renderCells(); renderGlobalAssistant();
 }
 function renderGlobalAssistant() {
   const drawer = document.querySelector('#global-ai-drawer'); if (!drawer) return;
@@ -892,7 +988,7 @@ function renderGlobalAssistant() {
   drawer.classList.toggle('conversation-list-mode', isList);
   const browser = document.querySelector('#global-ai-conversation-browser');
   browser.classList.toggle('hidden', !isList);
-  browser.innerHTML = `<button class="button primary global-ai-new" id="new-global-ai-conversation">+ New conversation</button>${globalAssistant.conversations.slice().sort((left, right) => right.updatedAt - left.updatedAt).map(item => `<button class="global-ai-conversation-card ${item.id === conversation.id ? 'active' : ''}" data-global-ai-conversation="${escapeHTML(item.id)}"><strong>${escapeHTML(item.title || 'New conversation')}</strong><span>${escapeHTML(globalConversationPreview(item))}</span><time>${new Date(item.updatedAt).toLocaleDateString()}</time></button>`).join('')}`;
+  browser.innerHTML = `<button class="button primary global-ai-new" id="new-global-ai-conversation">+ New conversation</button>${globalAssistant.conversations.slice().sort((left, right) => right.updatedAt - left.updatedAt).map(item => `<article class="global-ai-conversation-card ${item.id === conversation.id ? 'active' : ''}"><button class="global-ai-conversation-open" data-global-ai-conversation="${escapeHTML(item.id)}"><strong>${escapeHTML(item.title || 'New conversation')}</strong><span>${escapeHTML(globalConversationPreview(item))}</span><time>${new Date(item.updatedAt).toLocaleDateString()}</time></button><button class="global-ai-conversation-delete" data-global-ai-delete="${escapeHTML(item.id)}" title="Delete conversation" aria-label="Delete conversation">⌫</button></article>`).join('')}`;
   document.querySelector('#global-ai-title-text').textContent = isList ? 'Conversations' : (conversation.title || 'New conversation');
   document.querySelector('#global-ai-back').classList.toggle('hidden', isList);
   const messages = document.querySelector('#global-ai-messages');
@@ -939,6 +1035,14 @@ async function applyGlobalAssistantProposal() {
 async function applyGlobalAssistantProposalChange(changeId) {
   const conversation = activeGlobalConversation(); const proposal = conversation.proposal;
   const change = proposal?.changes?.find(item => item.id === changeId); if (!change) return;
+  if (change.op === 'edit_cell') {
+    const cell = getCell(change.cellId);
+    if (cell) {
+      const currentEdits = validatedLineEdits(cell.source, change.edits);
+      if (currentEdits.length !== change.edits.length) throw new Error('This cell changed after the AI proposal was created. Reject the stale proposal and ask again.');
+      cell.source = applyLineEdits(cell.source, currentEdits); cell.output = ''; cell.meta = ''; queuePythonCheck(cell); save();
+    }
+  }
   if (change.op === 'replace_cell') { const cell = getCell(change.cellId); if (cell) { Object.assign(cell, { type: change.type, source: change.source, output: '', meta: '' }); queuePythonCheck(cell); save(); } }
   if (change.op === 'insert_after') { const index = cellIndex(change.cellId); if (index >= 0) { state.cells.splice(index + 1, 0, { ...newCell(change.cell.type), source: change.cell.source }); save(); } }
   if (change.op === 'delete_cell' && state.cells.length > 1) { state.cells = state.cells.filter(cell => cell.id !== change.cellId); save(); }
@@ -1097,11 +1201,16 @@ function renderCells() {
     node.querySelector('.cell-footer').hidden = true;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     if (executionDetail.status === 'running') { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
-    const cellChanges = (proposal?.changes || []).filter(change => ['replace_cell', 'delete_cell'].includes(change.op) && change.cellId === data.id);
+    const cellChanges = (proposal?.changes || []).filter(change => ['edit_cell', 'replace_cell', 'delete_cell'].includes(change.op) && change.cellId === data.id);
+    const inCellReviewEdits = data.ai?.proposedSource && data.ai.baseSource === data.source
+      ? minimalReplacementEdit(data.source, data.ai.proposedSource) : [];
     if (cellChanges.length) {
       node.classList.add('has-staged-ai-change');
+      const lineEdits = cellChanges.filter(change => change.op === 'edit_cell');
+      if (lineEdits.length) node.querySelector('.cell-actions').insertAdjacentHTML('afterbegin', lineEdits.map(stagedEditControlsMarkup).join(''));
       node.querySelector('.cell-footer').insertAdjacentHTML('beforebegin', cellChanges.map(inlineProposalMarkup).join(''));
     }
+    if (inCellReviewEdits.length) node.classList.add('has-staged-ai-change');
     cellsEl.appendChild(node);
     const insertedChanges = (proposal?.changes || []).filter(change => change.op === 'insert_after' && change.cellId === data.id);
     insertedChanges.forEach(change => {
@@ -1112,6 +1221,7 @@ function renderCells() {
         id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS, symbols: () => symbolsBefore(data.id), connections: projectContext.connections,
         onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id), onInspect: ({ code, pos }) => inspectInDssKernel(activeNotebook(), code, pos), onComplete: ({ code, pos }) => completeInDssKernel(activeNotebook(), code, pos),
       });
+      editorApi.setReviewEdits(data.id, [...cellChanges.filter(change => change.op === 'edit_cell').flatMap(change => change.edits), ...inCellReviewEdits]);
       editorApi.setDiagnostic(data.id, [...(data.diagnostic ? [data.diagnostic] : []), ...staticDiagnostics(data.id)]);
     }
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.dataset.dropIndex = String(index + 1); gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
@@ -1380,10 +1490,13 @@ cellsEl.addEventListener('input', event => {
 });
 cellsEl.addEventListener('keydown', event => {
   const question = event.target.closest('[data-ai-question]');
-  if (!question || event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  if (!question || event.key !== 'Enter' || event.isComposing) return;
+  // Keep the native textarea behaviour for Shift+Enter. The global notebook
+  // shortcut below must not reinterpret it as "run and advance".
+  if (event.shiftKey) { event.stopPropagation(); return; }
   event.preventDefault();
   const id = question.dataset.aiQuestion;
-  askCellAi(id, question.value.trim() || 'Explain this cell and suggest an improvement.');
+  askCellAi(id, question.value.trim() || 'Improve this cell while preserving its intent.');
 });
 cellsEl.addEventListener('change', event => { if (event.target.matches('.cell-check')) selectCell(event.target.closest('.cell').dataset.id, event.target.checked); });
 cellsEl.addEventListener('click', event => {
@@ -1391,10 +1504,12 @@ cellsEl.addEventListener('click', event => {
   setActiveCell(id);
   if (event.target.closest('.ai-help')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: true, loading: false, error: '' }; renderCells(); focusAiQuestion(id); return; }
   if (event.target.closest('[data-ai-close]')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: false }; renderCells(); return; }
+  const aiReviewAction = event.target.closest('[data-ai-review-action]');
+  if (aiReviewAction) { resolveCellAiReview(id, aiReviewAction.dataset.aiReviewAction === 'accept'); return; }
   const aiPrompt = event.target.closest('[data-ai-prompt]');
-  if (aiPrompt) { askCellAi(id, aiPrompt.dataset.aiPrompt, aiPrompt.dataset.aiMode || 'answer'); return; }
+  if (aiPrompt) { askCellAi(id, aiPrompt.dataset.aiPrompt); return; }
   const aiSend = event.target.closest('[data-ai-send]');
-  if (aiSend) { const question = cell.querySelector(`[data-ai-question="${id}"]`)?.value.trim() || 'Explain this cell and suggest an improvement.'; askCellAi(id, question); return; }
+  if (aiSend) { const question = cell.querySelector(`[data-ai-question="${id}"]`)?.value.trim() || 'Improve this cell while preserving its intent.'; askCellAi(id, question); return; }
   if (event.target.closest('[data-toggle-section]')) { toggleSection(id); return; }
   if (event.target.closest('.run-cell')) {
     const current = getCell(id);
@@ -1583,6 +1698,8 @@ document.querySelector('#global-ai-conversation-browser')?.addEventListener('cli
     const conversation = { id: crypto.randomUUID(), title: 'New conversation', messages: [], proposal: null, updatedAt: Date.now() };
     globalAssistant.conversations.push(conversation); globalAssistant.activeConversationId = conversation.id; globalAssistant.view = 'conversation'; persistGlobalAssistantConversations(); renderCells(); renderGlobalAssistant(); requestAnimationFrame(() => document.querySelector('#global-ai-input')?.focus());
   }
+  const deleteButton = event.target.closest('[data-global-ai-delete]');
+  if (deleteButton) { deleteGlobalAssistantConversation(deleteButton.dataset.globalAiDelete); return; }
   const conversationButton = event.target.closest('[data-global-ai-conversation]');
   if (conversationButton) { globalAssistant.activeConversationId = conversationButton.dataset.globalAiConversation; globalAssistant.view = 'conversation'; persistGlobalAssistantConversations(); renderCells(); renderGlobalAssistant(); requestAnimationFrame(() => document.querySelector('#global-ai-input')?.focus()); }
 });
@@ -1816,7 +1933,7 @@ document.querySelector('#use-dss-version')?.addEventListener('click', () => {
 document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape') { clearPointerDrag(); closeCellMenus(); closeSettings(); closeFolderModal(); closeDataframeModal(); return; }
-  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { if (event.target.closest?.('.cm-editor')) return; event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
+  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { if (event.target.closest?.('.cm-editor, [data-ai-question], #global-ai-input')) return; event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
   // A focused CodeMirror editor owns its own undo stack. Let it handle Cmd/Ctrl+Z
   // so the edit is undone in place and the cursor never leaves the cell.
   if (mod && event.key.toLowerCase() === 'z' && event.target.closest?.('.cm-editor')) return;

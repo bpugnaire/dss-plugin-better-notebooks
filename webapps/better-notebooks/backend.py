@@ -91,11 +91,13 @@ def prepare_ai_completion(payload):
     """Validate a focused coding request and build its LLM Mesh completion."""
     cell = payload.get("cell") or {}
     source = str(cell.get("source") or "")
-    question = str(payload.get("question") or "Explain this cell and suggest an improvement.").strip()
+    question = str(payload.get("question") or "Improve this cell while preserving its intent.").strip()
     language = str(cell.get("language") or "python").strip().lower()
     notebook_name = str(payload.get("notebookName") or "this notebook").strip()
     error = str(payload.get("error") or "").strip()
-    mode = str(payload.get("mode") or "answer").strip().lower()
+    # The embedded assistant is an editing surface, not a second chat. Always
+    # return replacement source that can be streamed into the focused cell.
+    mode = "rewrite"
     if len(source) > MAX_AI_SOURCE_LENGTH or len(question) > MAX_AI_QUESTION_LENGTH:
         raise ValueError("The cell or question is too large for AI assistance.")
     models = available_llms()
@@ -105,16 +107,10 @@ def prepare_ai_completion(payload):
     if not any(model["id"] == requested_id for model in models):
         raise ValueError("The selected LLM Mesh model is not available in this project.")
     system_prompt = (
-        "You are a concise Dataiku notebook coding assistant. Help with the provided single cell only. "
-        "Do not claim to have executed code. Explain risks clearly, preserve Dataiku conventions, and return "
-        "Markdown with a suggested replacement only when it materially helps."
+        "You are a Dataiku notebook coding assistant. Rewrite the supplied single cell to satisfy the request. "
+        "Return only the complete replacement source code for that cell: no Markdown fences, explanation, or preamble. "
+        "Preserve Dataiku conventions and do not claim that code has run."
     )
-    if mode == "rewrite":
-        system_prompt = (
-            "You are a Dataiku notebook coding assistant. Rewrite the supplied single cell to satisfy the request. "
-            "Return only the complete replacement source code for that cell: no Markdown fences, explanation, or preamble. "
-            "Preserve Dataiku conventions and do not claim that code has run."
-        )
     user_prompt = "\n\n".join([
         "Notebook: %s" % notebook_name,
         "Cell language: %s" % language,
@@ -427,11 +423,12 @@ The answer must never contain JSON, implementation protocol, or these tags. The 
 Use this exact JSON schema inside the changes block:
 {"message":"short explanation","changes":[...]}
 Each change must be one of:
+{"op":"edit_cell","cellId":"existing cell id","edits":[{"startLine":1,"endLine":1,"expected":"exact existing lines","replacement":"replacement lines"}]}
 {"op":"replace_cell","cellId":"existing cell id","source":"complete replacement source","type":"python|sql|markdown"}
 {"op":"insert_after","cellId":"existing cell id","cell":{"type":"python|sql|markdown","source":"source"}}
 {"op":"delete_cell","cellId":"existing cell id"}
 {"op":"create_notebook","name":"new notebook name","cells":[{"type":"python|sql|markdown","source":"source"}]}
-Use only existing cell ids in replace/insert/delete. Never execute code. Propose the smallest useful change set; if no edit is requested, return an empty changes list.
+For an edit to an existing cell, use edit_cell by default. Each edit must cover the smallest affected consecutive line range and its expected text must exactly match the current source. Preserve every unaffected line. Use replace_cell only for a genuine whole-cell rewrite where most lines change. Use only existing cell ids in edit/replace/insert/delete. Never execute code. Propose the smallest useful change set; if no edit is requested, return an empty changes list.
 The snapshot may include activeCell and selectedCellIds. When the user says "this cell", "the selected cell", or refers to a cell discussed earlier, use that context and the conversation history to identify the target. Only ask a clarification when no target or intended change can be inferred."""
     history_lines = []
     if isinstance(history, list):
@@ -492,8 +489,21 @@ The snapshot may include activeCell and selectedCellIds. When the user says "thi
                 answer = raw[answer_start + len("<answer>"):answer_end]
                 if len(answer) > answer_offset:
                     yield event("delta", {"text": answer[answer_offset:]})
+                changes_text = raw[changes_start + len("<changes>"):changes_end].strip()
+                # Some otherwise valid coding models wrap the machine block in
+                # a JSON fence or append a short explanation before closing the
+                # tag. Decode the first JSON object rather than rejecting a
+                # complete proposal because of harmless surrounding text.
+                if changes_text.startswith("```"):
+                    changes_text = re.sub(r"^```(?:json)?\\s*", "", changes_text, count=1, flags=re.IGNORECASE)
+                    changes_text = re.sub(r"\\s*```$", "", changes_text)
                 try:
-                    proposal = json.loads(raw[changes_start + len("<changes>"):changes_end].strip())
+                    first_object = changes_text.find("{")
+                    if first_object < 0:
+                        raise ValueError("missing JSON object")
+                    proposal, _ = json.JSONDecoder().raw_decode(changes_text[first_object:])
+                    if not isinstance(proposal, dict) or not isinstance(proposal.get("changes"), list):
+                        raise ValueError("proposal has no changes array")
                 except Exception:
                     yield event("error", {"error": "Notebook AI returned invalid proposed changes. Please retry."})
                     return
