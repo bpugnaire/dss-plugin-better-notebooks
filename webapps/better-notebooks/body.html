@@ -105,8 +105,8 @@
       </aside>
     </div>
     <aside class="global-ai-drawer hidden" id="global-ai-drawer" aria-label="Notebook AI assistant">
-      <header><div><span class="eyebrow">NOTEBOOK AI</span><strong>Reviewable notebook changes</strong></div><button class="icon-button" id="close-global-ai" aria-label="Close notebook AI">×</button></header>
-      <div class="global-ai-conversations"><button class="button ghost" id="new-global-ai-conversation">+ New conversation</button><select id="global-ai-conversation-selector" aria-label="Notebook AI conversation"></select></div>
+      <header><div class="global-ai-title"><button class="icon-button hidden" id="global-ai-back" aria-label="Back to conversations">←</button><div><span class="eyebrow">NOTEBOOK AI</span><strong id="global-ai-title-text">Conversations</strong></div></div><button class="icon-button" id="close-global-ai" aria-label="Close notebook AI">×</button></header>
+      <section class="global-ai-conversation-browser" id="global-ai-conversation-browser" aria-label="Notebook AI conversations"></section>
       <div class="global-ai-messages" id="global-ai-messages" aria-live="polite"></div>
       <section class="global-ai-proposal hidden" id="global-ai-proposal"></section>
       <form class="global-ai-compose" id="global-ai-form"><textarea id="global-ai-input" placeholder="Ask about this notebook or request an edit…" required></textarea><button class="button primary" type="submit" id="global-ai-send">Ask</button></form>

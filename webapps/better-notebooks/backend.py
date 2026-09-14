@@ -404,6 +404,7 @@ def stream_notebook_assistant():
     payload = request.get_json(force=True) or {}
     question = str(payload.get("question") or "").strip()
     notebook = payload.get("notebook") or {}
+    history = payload.get("history") or []
     if not question:
         return jsonify({"error": "Ask the notebook assistant a question first."}), 400
     if len(question) > MAX_AI_QUESTION_LENGTH:
@@ -415,16 +416,34 @@ def stream_notebook_assistant():
     requested_id = str(payload.get("modelId") or configured_coding_llm_id() or (models[0]["id"] if models else ""))
     if not models or not any(model["id"] == requested_id for model in models):
         return jsonify({"error": "No selected LLM Mesh coding model is available for this project."}), 400
-    system_prompt = """You are Better Notebooks' global assistant. Return ONLY valid JSON, never Markdown.
-Use this exact schema:
+    system_prompt = """You are Better Notebooks' global assistant. Return exactly two tagged blocks and nothing else:
+<answer>
+A concise, human-readable answer for the notebook author. Use plain Markdown when useful.
+</answer>
+<changes>
+{"message":"short explanation","changes":[...]}
+</changes>
+The answer must never contain JSON, implementation protocol, or these tags. The changes block is machine-only.
+Use this exact JSON schema inside the changes block:
 {"message":"short explanation","changes":[...]}
 Each change must be one of:
 {"op":"replace_cell","cellId":"existing cell id","source":"complete replacement source","type":"python|sql|markdown"}
 {"op":"insert_after","cellId":"existing cell id","cell":{"type":"python|sql|markdown","source":"source"}}
 {"op":"delete_cell","cellId":"existing cell id"}
 {"op":"create_notebook","name":"new notebook name","cells":[{"type":"python|sql|markdown","source":"source"}]}
-Use only existing cell ids in replace/insert/delete. Never execute code. Propose the smallest useful change set; if no edit is requested, return an empty changes list."""
-    prompt = "User request:\n%s\n\nCurrent notebook snapshot:\n%s" % (question, snapshot)
+Use only existing cell ids in replace/insert/delete. Never execute code. Propose the smallest useful change set; if no edit is requested, return an empty changes list.
+The snapshot may include activeCell and selectedCellIds. When the user says "this cell", "the selected cell", or refers to a cell discussed earlier, use that context and the conversation history to identify the target. Only ask a clarification when no target or intended change can be inferred."""
+    history_lines = []
+    if isinstance(history, list):
+        for message in history[-12:]:
+            if not isinstance(message, dict):
+                continue
+            role = "Assistant" if message.get("role") == "assistant" else "User"
+            content = str(message.get("content") or "").strip()
+            if content:
+                history_lines.append("%s: %s" % (role, content[:4000]))
+    conversation_context = "\n".join(history_lines) or "(No earlier conversation.)"
+    prompt = "Conversation so far:\n%s\n\nLatest user request:\n%s\n\nCurrent notebook snapshot:\n%s" % (conversation_context, question, snapshot)
     try:
         completion = current_project().get_llm(requested_id).new_completion()
         completion.with_message(system_prompt, role="system")
@@ -441,15 +460,44 @@ Use only existing cell ids in replace/insert/delete. Never execute code. Propose
         try:
             streamer = completion.execute_streamed(collect_response=True)
             chunks = streamer.iter_chunks() if hasattr(streamer, "iter_chunks") else streamer
+            raw = ""
+            answer_offset = 0
             for chunk in chunks:
                 data = getattr(chunk, "data", {}) or {}
                 text = data.get("text", "") if isinstance(data, dict) else ""
                 if text:
-                    yield event("delta", {"text": str(text)})
+                    raw += str(text)
+                    answer_start = raw.find("<answer>")
+                    if answer_start >= 0:
+                        answer_start += len("<answer>")
+                        answer_end = raw.find("</answer>", answer_start)
+                        answer = raw[answer_start:answer_end if answer_end >= 0 else len(raw)]
+                        # Keep a short suffix while streaming so a delimiter split
+                        # across chunks can never leak into the visible chat.
+                        safe_end = len(answer) if answer_end >= 0 else max(0, len(answer) - len("</answer>"))
+                        if safe_end > answer_offset:
+                            yield event("delta", {"text": answer[answer_offset:safe_end]})
+                            answer_offset = safe_end
             response = getattr(streamer, "response", None)
             if response is not None and not getattr(response, "success", False):
                 yield event("error", {"error": llm_error_message(response)})
             else:
+                answer_start = raw.find("<answer>")
+                answer_end = raw.find("</answer>", answer_start + len("<answer>")) if answer_start >= 0 else -1
+                changes_start = raw.find("<changes>")
+                changes_end = raw.rfind("</changes>")
+                if answer_start < 0 or answer_end < 0 or changes_start < 0 or changes_end < changes_start:
+                    yield event("error", {"error": "Notebook AI returned an unsupported response format. Please retry."})
+                    return
+                answer = raw[answer_start + len("<answer>"):answer_end]
+                if len(answer) > answer_offset:
+                    yield event("delta", {"text": answer[answer_offset:]})
+                try:
+                    proposal = json.loads(raw[changes_start + len("<changes>"):changes_end].strip())
+                except Exception:
+                    yield event("error", {"error": "Notebook AI returned invalid proposed changes. Please retry."})
+                    return
+                yield event("proposal", {"proposal": proposal})
                 yield event("done", {"modelId": requested_id})
         except Exception as error:
             yield event("error", {"error": "LLM Mesh request failed: %s" % error})
