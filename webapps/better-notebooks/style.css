@@ -249,6 +249,19 @@ button { cursor: pointer; }
 .global-ai-title { display:flex; align-items:center; gap:7px; min-width:0; }.global-ai-title .icon-button { font-size:19px; line-height:1; padding:0 2px; }.global-ai-conversation-browser { min-height:0; overflow:auto; display:grid; align-content:start; gap:6px; padding:2px; }.global-ai-new { width:100%; height:34px; font-size:9px; }.global-ai-conversation-card { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 8px; width:100%; padding:9px; border:1px solid #dcebe3; border-radius:7px; background:#fff; color:#36554a; text-align:left; }.global-ai-conversation-card:hover,.global-ai-conversation-card.active { border-color:#73c9a7; background:#effbf5; }.global-ai-conversation-card strong { overflow:hidden; color:#193d32; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }.global-ai-conversation-card span { overflow:hidden; color:#74867f; font-size:9px; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; }.global-ai-conversation-card time { grid-column:2; grid-row:1 / span 2; align-self:center; color:#91a39b; font-size:8px; white-space:nowrap; }
 .global-ai-drawer.conversation-list-mode { grid-template-rows:auto minmax(0,1fr); }
 
+/* Keep the message scroller and compact composer anchored to the bottom of
+   the drawer. Conversation cards use sibling controls so deleting a chat does
+   not accidentally open it. */
+.global-ai-drawer:not(.conversation-list-mode) .global-ai-messages { align-self:stretch; }
+.global-ai-compose,.global-ai-note { align-self:end; }
+.global-ai-conversation-card { align-items:stretch; padding:0; overflow:hidden; }
+.global-ai-conversation-open { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 8px; min-width:0; padding:9px; border:0; background:transparent; color:inherit; text-align:left; }
+.global-ai-conversation-open strong { overflow:hidden; color:#193d32; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.global-ai-conversation-open span { overflow:hidden; color:#74867f; font-size:9px; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; }
+.global-ai-conversation-open time { grid-column:2; grid-row:1 / span 2; align-self:center; color:#91a39b; font-size:8px; white-space:nowrap; }
+.global-ai-conversation-delete { align-self:center; margin:0 7px 0 0; border:0; border-radius:4px; background:transparent; color:#8b9c95; padding:5px; font-size:12px; line-height:1; }
+.global-ai-conversation-delete:hover { background:#ffeceb; color:#a6433c; }
+
 /* The chat only summarizes a proposal. The real review happens beside the
    affected cells, so notebook edits retain the familiar IDE staging model. */
 .proposal-file-summary { display:flex; align-items:center; gap:7px; padding:7px 8px; border:1px solid #dcebe3; border-radius:5px; background:#f8fcfa; color:#527166; font:700 9px Manrope,sans-serif; }.proposal-file-summary strong { margin-right:auto; color:#294b3f; }.diff-added { color:#168057; }.diff-removed { color:#bd4a41; }

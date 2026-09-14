@@ -91,11 +91,13 @@ def prepare_ai_completion(payload):
     """Validate a focused coding request and build its LLM Mesh completion."""
     cell = payload.get("cell") or {}
     source = str(cell.get("source") or "")
-    question = str(payload.get("question") or "Explain this cell and suggest an improvement.").strip()
+    question = str(payload.get("question") or "Improve this cell while preserving its intent.").strip()
     language = str(cell.get("language") or "python").strip().lower()
     notebook_name = str(payload.get("notebookName") or "this notebook").strip()
     error = str(payload.get("error") or "").strip()
-    mode = str(payload.get("mode") or "answer").strip().lower()
+    # The embedded assistant is an editing surface, not a second chat. Always
+    # return replacement source that can be streamed into the focused cell.
+    mode = "rewrite"
     if len(source) > MAX_AI_SOURCE_LENGTH or len(question) > MAX_AI_QUESTION_LENGTH:
         raise ValueError("The cell or question is too large for AI assistance.")
     models = available_llms()
@@ -105,16 +107,10 @@ def prepare_ai_completion(payload):
     if not any(model["id"] == requested_id for model in models):
         raise ValueError("The selected LLM Mesh model is not available in this project.")
     system_prompt = (
-        "You are a concise Dataiku notebook coding assistant. Help with the provided single cell only. "
-        "Do not claim to have executed code. Explain risks clearly, preserve Dataiku conventions, and return "
-        "Markdown with a suggested replacement only when it materially helps."
+        "You are a Dataiku notebook coding assistant. Rewrite the supplied single cell to satisfy the request. "
+        "Return only the complete replacement source code for that cell: no Markdown fences, explanation, or preamble. "
+        "Preserve Dataiku conventions and do not claim that code has run."
     )
-    if mode == "rewrite":
-        system_prompt = (
-            "You are a Dataiku notebook coding assistant. Rewrite the supplied single cell to satisfy the request. "
-            "Return only the complete replacement source code for that cell: no Markdown fences, explanation, or preamble. "
-            "Preserve Dataiku conventions and do not claim that code has run."
-        )
     user_prompt = "\n\n".join([
         "Notebook: %s" % notebook_name,
         "Cell language: %s" % language,

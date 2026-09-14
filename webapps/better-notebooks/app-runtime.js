@@ -792,21 +792,20 @@ async function loadAiModels() {
 }
 function aiHelpMarkup(cell) {
   if (!cell.ai?.open) return '';
-  const response = cell.ai.response && cell.ai.mode !== 'rewrite' ? `<article class="cell-ai-response"><span class="cell-ai-message-label">Assistant</span><div>${markdownMarkup(cell.ai.response)}</div></article>` : '';
-  const applying = cell.ai.loading && cell.ai.mode === 'rewrite' ? '<div class="cell-ai-applying">✦ Updating this cell…</div>' : '';
+  const applying = cell.ai.loading ? '<div class="cell-ai-applying">✦ Updating this cell…</div>' : '';
   const error = cell.ai.error ? `<div class="cell-ai-error">${escapeHTML(cell.ai.error)}</div>` : '';
-  return `<section class="cell-ai-panel"><header><span>✦ AI help</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI help">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Explain this cell" data-ai-mode="answer">Explain</button><button type="button" data-ai-prompt="Fix likely bugs while preserving the intent" data-ai-mode="rewrite">Fix bugs</button><button type="button" data-ai-prompt="Make this clearer and more idiomatic while preserving behaviour" data-ai-mode="rewrite">Improve</button></div><div class="cell-ai-compose"><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Ask about this cell · Enter to send · Shift+Enter for a new line">${escapeHTML(cell.ai.question || '')}</textarea><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Asking…' : 'Ask AI'}</button></div>${applying}${error}${response}</section>`;
+  return `<section class="cell-ai-panel"><header><span>✦ AI edit</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI edit">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Fix likely bugs while preserving the intent">Fix bugs</button><button type="button" data-ai-prompt="Make this clearer and more idiomatic while preserving behaviour">Improve</button><button type="button" data-ai-prompt="Add concise documentation where useful">Document</button></div><div class="cell-ai-compose"><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Describe the change · Enter to apply · Shift+Enter for a new line">${escapeHTML(cell.ai.question || '')}</textarea><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Applying…' : 'Apply'}</button></div>${applying}${error}</section>`;
 }
 function focusAiQuestion(id) {
   requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] [data-ai-question]`)?.focus());
 }
-async function askCellAi(id, question, mode = 'answer') {
+async function askCellAi(id, question, mode = 'rewrite') {
   const cell = getCell(id); if (!cell) return;
   if (!dss.enabled || !aiAssistant.available) {
     cell.ai = { ...(cell.ai || {}), loading: false, error: 'No LLM Mesh coding model is available for this project.' };
     renderCells(); return;
   }
-  cell.ai = { ...(cell.ai || {}), open: true, question, mode, loading: true, error: '', response: '' };
+  cell.ai = { ...(cell.ai || {}), open: true, question, mode: 'rewrite', loading: true, error: '', response: '' };
   renderCells();
   try {
     const error = cell.output?.outputs?.find(output => output.output_type === 'error');
@@ -815,13 +814,13 @@ async function askCellAi(id, question, mode = 'answer') {
       if (event === 'delta') {
         const response = `${cell.ai.response || ''}${payload.text || ''}`;
         cell.ai = { ...cell.ai, response };
-        if (mode === 'rewrite') { cell.source = response; BetterNotebookEditor.replaceSource(id, response, true); }
+        cell.source = response; BetterNotebookEditor.replaceSource(id, response, true);
         updateRenderedCellOutput(cell);
       }
       if (event === 'error') streamError = payload.error || 'LLM Mesh did not complete the request.';
     });
     cell.ai = { ...cell.ai, loading: false, response: cell.ai.response || (streamError ? '' : 'The model returned no text.'), error: streamError };
-    if (mode === 'rewrite' && !streamError && cell.ai.response) { save(); queuePythonCheck(cell); renderOutline(); renderLinkedDatasets(); }
+    if (!streamError && cell.ai.response) { save(); queuePythonCheck(cell); renderOutline(); renderLinkedDatasets(); }
   } catch (error) {
     cell.ai = { ...cell.ai, loading: false, error: error.message || 'AI help failed.' };
   }
@@ -948,6 +947,20 @@ function globalConversationPreview(conversation) {
   const userMessages = conversation.messages.filter(message => message.role === 'user');
   return userMessages.length ? userMessages[userMessages.length - 1].content : 'No messages yet';
 }
+function deleteGlobalAssistantConversation(id) {
+  const existing = globalAssistant.conversations.find(conversation => conversation.id === id);
+  if (!existing) return;
+  globalAssistant.conversations = globalAssistant.conversations.filter(conversation => conversation.id !== id);
+  if (!globalAssistant.conversations.length) {
+    const replacement = { id: crypto.randomUUID(), title: 'New conversation', messages: [], proposal: null, updatedAt: Date.now() };
+    globalAssistant.conversations.push(replacement);
+  }
+  if (globalAssistant.activeConversationId === id) {
+    globalAssistant.activeConversationId = globalAssistant.conversations.slice().sort((left, right) => right.updatedAt - left.updatedAt)[0].id;
+  }
+  globalAssistant.view = 'list';
+  persistGlobalAssistantConversations(); renderCells(); renderGlobalAssistant();
+}
 function renderGlobalAssistant() {
   const drawer = document.querySelector('#global-ai-drawer'); if (!drawer) return;
   drawer.classList.toggle('hidden', !globalAssistant.open);
@@ -956,7 +969,7 @@ function renderGlobalAssistant() {
   drawer.classList.toggle('conversation-list-mode', isList);
   const browser = document.querySelector('#global-ai-conversation-browser');
   browser.classList.toggle('hidden', !isList);
-  browser.innerHTML = `<button class="button primary global-ai-new" id="new-global-ai-conversation">+ New conversation</button>${globalAssistant.conversations.slice().sort((left, right) => right.updatedAt - left.updatedAt).map(item => `<button class="global-ai-conversation-card ${item.id === conversation.id ? 'active' : ''}" data-global-ai-conversation="${escapeHTML(item.id)}"><strong>${escapeHTML(item.title || 'New conversation')}</strong><span>${escapeHTML(globalConversationPreview(item))}</span><time>${new Date(item.updatedAt).toLocaleDateString()}</time></button>`).join('')}`;
+  browser.innerHTML = `<button class="button primary global-ai-new" id="new-global-ai-conversation">+ New conversation</button>${globalAssistant.conversations.slice().sort((left, right) => right.updatedAt - left.updatedAt).map(item => `<article class="global-ai-conversation-card ${item.id === conversation.id ? 'active' : ''}"><button class="global-ai-conversation-open" data-global-ai-conversation="${escapeHTML(item.id)}"><strong>${escapeHTML(item.title || 'New conversation')}</strong><span>${escapeHTML(globalConversationPreview(item))}</span><time>${new Date(item.updatedAt).toLocaleDateString()}</time></button><button class="global-ai-conversation-delete" data-global-ai-delete="${escapeHTML(item.id)}" title="Delete conversation" aria-label="Delete conversation">⌫</button></article>`).join('')}`;
   document.querySelector('#global-ai-title-text').textContent = isList ? 'Conversations' : (conversation.title || 'New conversation');
   document.querySelector('#global-ai-back').classList.toggle('hidden', isList);
   const messages = document.querySelector('#global-ai-messages');
@@ -1455,10 +1468,13 @@ cellsEl.addEventListener('input', event => {
 });
 cellsEl.addEventListener('keydown', event => {
   const question = event.target.closest('[data-ai-question]');
-  if (!question || event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  if (!question || event.key !== 'Enter' || event.isComposing) return;
+  // Keep the native textarea behaviour for Shift+Enter. The global notebook
+  // shortcut below must not reinterpret it as "run and advance".
+  if (event.shiftKey) { event.stopPropagation(); return; }
   event.preventDefault();
   const id = question.dataset.aiQuestion;
-  askCellAi(id, question.value.trim() || 'Explain this cell and suggest an improvement.');
+  askCellAi(id, question.value.trim() || 'Improve this cell while preserving its intent.');
 });
 cellsEl.addEventListener('change', event => { if (event.target.matches('.cell-check')) selectCell(event.target.closest('.cell').dataset.id, event.target.checked); });
 cellsEl.addEventListener('click', event => {
@@ -1467,9 +1483,9 @@ cellsEl.addEventListener('click', event => {
   if (event.target.closest('.ai-help')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: true, loading: false, error: '' }; renderCells(); focusAiQuestion(id); return; }
   if (event.target.closest('[data-ai-close]')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: false }; renderCells(); return; }
   const aiPrompt = event.target.closest('[data-ai-prompt]');
-  if (aiPrompt) { askCellAi(id, aiPrompt.dataset.aiPrompt, aiPrompt.dataset.aiMode || 'answer'); return; }
+  if (aiPrompt) { askCellAi(id, aiPrompt.dataset.aiPrompt); return; }
   const aiSend = event.target.closest('[data-ai-send]');
-  if (aiSend) { const question = cell.querySelector(`[data-ai-question="${id}"]`)?.value.trim() || 'Explain this cell and suggest an improvement.'; askCellAi(id, question); return; }
+  if (aiSend) { const question = cell.querySelector(`[data-ai-question="${id}"]`)?.value.trim() || 'Improve this cell while preserving its intent.'; askCellAi(id, question); return; }
   if (event.target.closest('[data-toggle-section]')) { toggleSection(id); return; }
   if (event.target.closest('.run-cell')) {
     const current = getCell(id);
@@ -1658,6 +1674,8 @@ document.querySelector('#global-ai-conversation-browser')?.addEventListener('cli
     const conversation = { id: crypto.randomUUID(), title: 'New conversation', messages: [], proposal: null, updatedAt: Date.now() };
     globalAssistant.conversations.push(conversation); globalAssistant.activeConversationId = conversation.id; globalAssistant.view = 'conversation'; persistGlobalAssistantConversations(); renderCells(); renderGlobalAssistant(); requestAnimationFrame(() => document.querySelector('#global-ai-input')?.focus());
   }
+  const deleteButton = event.target.closest('[data-global-ai-delete]');
+  if (deleteButton) { deleteGlobalAssistantConversation(deleteButton.dataset.globalAiDelete); return; }
   const conversationButton = event.target.closest('[data-global-ai-conversation]');
   if (conversationButton) { globalAssistant.activeConversationId = conversationButton.dataset.globalAiConversation; globalAssistant.view = 'conversation'; persistGlobalAssistantConversations(); renderCells(); renderGlobalAssistant(); requestAnimationFrame(() => document.querySelector('#global-ai-input')?.focus()); }
 });
@@ -1891,7 +1909,7 @@ document.querySelector('#use-dss-version')?.addEventListener('click', () => {
 document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape') { clearPointerDrag(); closeCellMenus(); closeSettings(); closeFolderModal(); closeDataframeModal(); return; }
-  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { if (event.target.closest?.('.cm-editor')) return; event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
+  if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { if (event.target.closest?.('.cm-editor, [data-ai-question], #global-ai-input')) return; event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
   // A focused CodeMirror editor owns its own undo stack. Let it handle Cmd/Ctrl+Z
   // so the edit is undone in place and the cursor never leaves the cell.
   if (mod && event.key.toLowerCase() === 'z' && event.target.closest?.('.cm-editor')) return;
