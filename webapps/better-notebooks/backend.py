@@ -404,6 +404,7 @@ def stream_notebook_assistant():
     payload = request.get_json(force=True) or {}
     question = str(payload.get("question") or "").strip()
     notebook = payload.get("notebook") or {}
+    history = payload.get("history") or []
     if not question:
         return jsonify({"error": "Ask the notebook assistant a question first."}), 400
     if len(question) > MAX_AI_QUESTION_LENGTH:
@@ -430,8 +431,19 @@ Each change must be one of:
 {"op":"insert_after","cellId":"existing cell id","cell":{"type":"python|sql|markdown","source":"source"}}
 {"op":"delete_cell","cellId":"existing cell id"}
 {"op":"create_notebook","name":"new notebook name","cells":[{"type":"python|sql|markdown","source":"source"}]}
-Use only existing cell ids in replace/insert/delete. Never execute code. Propose the smallest useful change set; if no edit is requested, return an empty changes list."""
-    prompt = "User request:\n%s\n\nCurrent notebook snapshot:\n%s" % (question, snapshot)
+Use only existing cell ids in replace/insert/delete. Never execute code. Propose the smallest useful change set; if no edit is requested, return an empty changes list.
+The snapshot may include activeCell and selectedCellIds. When the user says "this cell", "the selected cell", or refers to a cell discussed earlier, use that context and the conversation history to identify the target. Only ask a clarification when no target or intended change can be inferred."""
+    history_lines = []
+    if isinstance(history, list):
+        for message in history[-12:]:
+            if not isinstance(message, dict):
+                continue
+            role = "Assistant" if message.get("role") == "assistant" else "User"
+            content = str(message.get("content") or "").strip()
+            if content:
+                history_lines.append("%s: %s" % (role, content[:4000]))
+    conversation_context = "\n".join(history_lines) or "(No earlier conversation.)"
+    prompt = "Conversation so far:\n%s\n\nLatest user request:\n%s\n\nCurrent notebook snapshot:\n%s" % (conversation_context, question, snapshot)
     try:
         completion = current_project().get_llm(requested_id).new_completion()
         completion.with_message(system_prompt, role="system")

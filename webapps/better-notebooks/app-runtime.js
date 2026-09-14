@@ -55,7 +55,7 @@ const execution = { runningAll: false, stopRequested: false };
 const dragScroll = { frame: 0, pointerY: null, container: null };
 const pointerDrag = { active: false, candidate: null, preview: null, dropIndex: null };
 const aiAssistant = { models: [], modelId: String(webappConfig.coding_llm_id || localStorage.getItem(storageKey('coding-llm-id')) || ''), available: false };
-const globalAssistant = { open: false, conversations: [], activeConversationId: '' };
+const globalAssistant = { open: false, view: 'list', conversations: [], activeConversationId: '' };
 const cellsEl = document.querySelector('#cells');
 const template = document.querySelector('#cell-template');
 
@@ -829,9 +829,12 @@ async function askCellAi(id, question, mode = 'answer') {
 }
 function notebookAssistantSnapshot() {
   const notebook = activeNotebook();
+  const focused = getCell(state.activeCellId);
   return {
     name: notebook.name,
     language: notebook.language,
+    activeCell: focused ? { id: focused.id, type: focused.type, source: focused.source } : null,
+    selectedCellIds: [...state.selected],
     datasets: DATASETS.map(dataset => ({ name: dataset.name, columns: (dataset.columns || []).map(column => column.name) })),
     cells: state.cells.map(cell => ({ id: cell.id, type: cell.type, source: cell.source })),
   };
@@ -866,7 +869,10 @@ function proposalLineCounts(proposal) {
 function proposalDiffMarkup(proposal) {
   const counts = proposalLineCounts(proposal); const notebook = activeNotebook();
   const extension = notebook?.remote ? 'ipynb' : 'py';
-  return `<header><div><span class="eyebrow">STAGED NOTEBOOK DIFF</span><strong>${escapeHTML(notebook?.name || 'notebook')}.${extension}</strong></div><button class="icon-button" data-global-ai-reject title="Reject all staged changes" aria-label="Reject all staged changes">×</button></header><div class="proposal-file-summary"><strong>${proposal.changes.length} staged cell change${proposal.changes.length === 1 ? '' : 's'}</strong><span class="diff-added">+${counts.added}</span><span class="diff-removed">−${counts.removed}</span></div><p>${escapeHTML(proposal.message)} Review each change directly in the notebook.</p><footer><button class="button ghost" data-global-ai-reject>Reject all</button><button class="button primary" data-global-ai-accept ${proposal.changes.length ? '' : 'disabled'}>Accept all</button></footer>`;
+  const actions = proposal.changes.length
+    ? '<footer><button class="button ghost" data-global-ai-reject>Reject all</button><button class="button primary" data-global-ai-accept>Accept all</button></footer>'
+    : '<p class="proposal-empty">No changes are staged. Ask for a specific edit to create a reviewable diff.</p>';
+  return `<header><div><span class="eyebrow">STAGED NOTEBOOK DIFF</span><strong>${escapeHTML(notebook?.name || 'notebook')}.${extension}</strong></div><button class="icon-button" data-global-ai-reject title="Reject all staged changes" aria-label="Reject all staged changes">×</button></header><div class="proposal-file-summary"><strong>${proposal.changes.length} staged cell change${proposal.changes.length === 1 ? '' : 's'}</strong><span class="diff-added">+${counts.added}</span><span class="diff-removed">−${counts.removed}</span></div><p>${escapeHTML(proposal.message)}${proposal.changes.length ? ' Review each change directly in the notebook.' : ''}</p>${actions}`;
 }
 function inlineProposalMarkup(change) {
   if (change.op === 'replace_cell') return `<section class="inline-ai-review replace" data-staged-change="${escapeHTML(change.id)}"><header><span>✦ AI proposed edit</span><span class="staged-kind">${escapeHTML(change.type)}</span><div><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Reject</button><button class="accept" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Accept</button></div></header><div class="inline-ai-diff"><pre><del>${escapeHTML(change.beforeSource)}</del><ins>${escapeHTML(change.source)}</ins></pre></div></section>`;
@@ -874,20 +880,31 @@ function inlineProposalMarkup(change) {
   if (change.op === 'insert_after') return `<section class="inline-ai-review insert" data-staged-change="${escapeHTML(change.id)}"><header><span>✦ AI proposed new ${escapeHTML(change.cell.type)} cell</span><div><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Reject</button><button class="accept" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Add cell</button></div></header><pre><ins>${escapeHTML(change.cell.source)}</ins></pre></section>`;
   return '';
 }
+function globalConversationPreview(conversation) {
+  const userMessages = conversation.messages.filter(message => message.role === 'user');
+  return userMessages.length ? userMessages[userMessages.length - 1].content : 'No messages yet';
+}
 function renderGlobalAssistant() {
   const drawer = document.querySelector('#global-ai-drawer'); if (!drawer) return;
   drawer.classList.toggle('hidden', !globalAssistant.open);
   const conversation = activeGlobalConversation();
-  const selector = document.querySelector('#global-ai-conversation-selector');
-  selector.innerHTML = globalAssistant.conversations.slice().sort((left, right) => right.updatedAt - left.updatedAt).map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.title)}</option>`).join('');
-  selector.value = conversation.id;
+  const isList = globalAssistant.view === 'list';
+  drawer.classList.toggle('conversation-list-mode', isList);
+  const browser = document.querySelector('#global-ai-conversation-browser');
+  browser.classList.toggle('hidden', !isList);
+  browser.innerHTML = `<button class="button primary global-ai-new" id="new-global-ai-conversation">+ New conversation</button>${globalAssistant.conversations.slice().sort((left, right) => right.updatedAt - left.updatedAt).map(item => `<button class="global-ai-conversation-card ${item.id === conversation.id ? 'active' : ''}" data-global-ai-conversation="${escapeHTML(item.id)}"><strong>${escapeHTML(item.title || 'New conversation')}</strong><span>${escapeHTML(globalConversationPreview(item))}</span><time>${new Date(item.updatedAt).toLocaleDateString()}</time></button>`).join('')}`;
+  document.querySelector('#global-ai-title-text').textContent = isList ? 'Conversations' : (conversation.title || 'New conversation');
+  document.querySelector('#global-ai-back').classList.toggle('hidden', isList);
   const messages = document.querySelector('#global-ai-messages');
+  messages.classList.toggle('hidden', isList);
   messages.innerHTML = conversation.messages.map(message => `<article class="global-ai-message ${message.role}"><strong>${message.role === 'user' ? 'You' : 'Notebook AI'}</strong><div>${message.role === 'assistant' ? markdownMarkup(message.content || 'Preparing proposal…') : escapeHTML(message.content)}</div></article>`).join('') || '<p class="global-ai-empty">Ask for an explanation, a notebook-wide refactor, or a new notebook.</p>';
   messages.scrollTop = messages.scrollHeight;
   const proposal = document.querySelector('#global-ai-proposal');
-  proposal.classList.toggle('hidden', !conversation.proposal); proposal.innerHTML = conversation.proposal ? proposalDiffMarkup(conversation.proposal) : '';
+  proposal.classList.toggle('hidden', isList || !conversation.proposal); proposal.innerHTML = conversation.proposal ? proposalDiffMarkup(conversation.proposal) : '';
+  document.querySelector('#global-ai-form').classList.toggle('hidden', isList);
+  document.querySelector('.global-ai-note').classList.toggle('hidden', isList);
 }
-function openGlobalAssistant() { globalAssistant.open = true; renderGlobalAssistant(); requestAnimationFrame(() => document.querySelector('#global-ai-input')?.focus()); }
+function openGlobalAssistant() { globalAssistant.open = true; globalAssistant.view = 'list'; renderGlobalAssistant(); }
 function closeGlobalAssistant() { globalAssistant.open = false; renderGlobalAssistant(); }
 async function sendGlobalAssistantQuestion(question) {
   const conversation = activeGlobalConversation();
@@ -899,7 +916,8 @@ async function sendGlobalAssistantQuestion(question) {
   try {
     if (!dss.enabled || !aiAssistant.available) throw new Error('No LLM Mesh coding model is available for this project.');
     let rawProposal = null;
-    await dssStreamRequest('notebook-assistant/stream', { modelId: aiAssistant.modelId, question, notebook: notebookAssistantSnapshot() }, (event, payload) => {
+    const history = conversation.messages.slice(0, -1).filter(message => String(message.content || '').trim()).slice(-12).map(message => ({ role: message.role, content: message.content }));
+    await dssStreamRequest('notebook-assistant/stream', { modelId: aiAssistant.modelId, question, history, notebook: notebookAssistantSnapshot() }, (event, payload) => {
       if (event === 'delta') { assistantMessage.content += payload.text || ''; renderGlobalAssistant(); }
       if (event === 'proposal') rawProposal = payload.proposal;
       if (event === 'error') streamError = payload.error || 'Notebook AI did not complete the request.';
@@ -1559,11 +1577,15 @@ document.querySelector('#ai-model-selector')?.addEventListener('change', event =
 });
 document.querySelector('#global-ai-button')?.addEventListener('click', openGlobalAssistant);
 document.querySelector('#close-global-ai')?.addEventListener('click', closeGlobalAssistant);
-document.querySelector('#new-global-ai-conversation')?.addEventListener('click', () => {
-  const conversation = { id: crypto.randomUUID(), title: 'New conversation', messages: [], proposal: null, updatedAt: Date.now() };
-  globalAssistant.conversations.push(conversation); globalAssistant.activeConversationId = conversation.id; persistGlobalAssistantConversations(); renderGlobalAssistant(); document.querySelector('#global-ai-input')?.focus();
+document.querySelector('#global-ai-back')?.addEventListener('click', () => { globalAssistant.view = 'list'; renderGlobalAssistant(); });
+document.querySelector('#global-ai-conversation-browser')?.addEventListener('click', event => {
+  if (event.target.closest('#new-global-ai-conversation')) {
+    const conversation = { id: crypto.randomUUID(), title: 'New conversation', messages: [], proposal: null, updatedAt: Date.now() };
+    globalAssistant.conversations.push(conversation); globalAssistant.activeConversationId = conversation.id; globalAssistant.view = 'conversation'; persistGlobalAssistantConversations(); renderCells(); renderGlobalAssistant(); requestAnimationFrame(() => document.querySelector('#global-ai-input')?.focus());
+  }
+  const conversationButton = event.target.closest('[data-global-ai-conversation]');
+  if (conversationButton) { globalAssistant.activeConversationId = conversationButton.dataset.globalAiConversation; globalAssistant.view = 'conversation'; persistGlobalAssistantConversations(); renderCells(); renderGlobalAssistant(); requestAnimationFrame(() => document.querySelector('#global-ai-input')?.focus()); }
 });
-document.querySelector('#global-ai-conversation-selector')?.addEventListener('change', event => { globalAssistant.activeConversationId = event.target.value; persistGlobalAssistantConversations(); renderCells(); renderGlobalAssistant(); });
 document.querySelector('#global-ai-form')?.addEventListener('submit', event => { event.preventDefault(); const input = document.querySelector('#global-ai-input'); const question = input?.value.trim(); if (!question) return; input.value = ''; sendGlobalAssistantQuestion(question); });
 document.querySelector('#global-ai-input')?.addEventListener('keydown', event => {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
