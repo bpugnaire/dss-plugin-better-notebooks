@@ -1120,12 +1120,13 @@ function updateRenderedRunState(cell) {
 function renderCellMinimap() {
   const tracks = document.querySelector('#cell-minimap-tracks');
   if (!tracks) return;
-  tracks.innerHTML = state.cells.map((cell, index) => {
+  const executableCells = state.cells.filter(cell => cell.type !== 'markdown');
+  tracks.innerHTML = executableCells.map((cell, index) => {
     const detail = executionState(cell);
-    return `<button type="button" class="cell-minimap-track ${detail.status}" data-minimap-cell="${escapeHTML(cell.id)}" title="Cell ${index + 1}: ${escapeHTML(executionLabel(cell) || 'Never run')}"></button>`;
+    return `<button type="button" class="cell-minimap-track ${detail.status}" data-minimap-cell="${escapeHTML(cell.id)}" title="Code cell ${index + 1}: ${escapeHTML(executionLabel(cell) || 'Never run')}"></button>`;
   }).join('');
-  document.querySelector('#minimap-last-run')?.toggleAttribute('disabled', !state.cells.some(cell => executionState(cell).finishedAt || executionState(cell).order));
-  document.querySelector('#minimap-first-failed')?.toggleAttribute('disabled', !state.cells.some(cell => executionState(cell).status === 'failed'));
+  document.querySelector('#minimap-last-run')?.toggleAttribute('disabled', !executableCells.some(cell => executionState(cell).finishedAt || executionState(cell).order));
+  document.querySelector('#minimap-first-failed')?.toggleAttribute('disabled', !executableCells.some(cell => executionState(cell).status === 'failed'));
 }
 function refreshExecutionTimestamps() {
   state.cells.forEach(cell => {
@@ -1901,10 +1902,10 @@ function revealCell(id) {
 document.querySelector('#cell-minimap')?.addEventListener('click', event => {
   const track = event.target.closest('[data-minimap-cell]'); if (track) { revealCell(track.dataset.minimapCell); return; }
   if (event.target.closest('#minimap-last-run')) {
-    const recent = [...state.cells].filter(cell => executionState(cell).finishedAt || executionState(cell).order).sort((left, right) => (executionState(right).finishedAt || 0) - (executionState(left).finishedAt || 0))[0];
+    const recent = state.cells.filter(cell => cell.type !== 'markdown' && (executionState(cell).finishedAt || executionState(cell).order)).sort((left, right) => (executionState(right).finishedAt || 0) - (executionState(left).finishedAt || 0))[0];
     if (recent) revealCell(recent.id);
   }
-  if (event.target.closest('#minimap-first-failed')) { const failed = state.cells.find(cell => executionState(cell).status === 'failed'); if (failed) revealCell(failed.id); }
+  if (event.target.closest('#minimap-first-failed')) { const failed = state.cells.find(cell => cell.type !== 'markdown' && executionState(cell).status === 'failed'); if (failed) revealCell(failed.id); }
 });
 const dataframeModal = document.querySelector('#dataframe-modal');
 const closeDataframeModal = () => dataframeModal?.classList.add('hidden');
