@@ -275,8 +275,12 @@ button { cursor: pointer; }
 .notebook-runbar .eyebrow { min-width:0; overflow:hidden; }
 .notebook-runbar .executor-selector { max-width:min(260px, 30cqw); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .notebook-runbar .head-actions { min-width:0; flex-wrap:nowrap; gap:6px; }
-.notebook-download-button { width:30px; padding:0 !important; font-size:16px !important; line-height:1; }
-.notebook-actions-menu { right:0; max-width:min(230px, calc(100vw - 20px)); }
+.notebook-download-button,.notebook-actions-button { display:grid; place-items:center; width:30px; min-width:30px; padding:0 !important; line-height:1; }
+.notebook-actions-button { font-size:14px !important; letter-spacing:1px; }
+.download-icon { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+#notebook-download-menu { right:36px; }
+#notebook-actions-menu { right:0; }
+.notebook-actions-menu { max-width:min(230px, calc(100vw - 20px)); }
 
 @container (max-width: 860px) {
   .notebook-runbar { min-height:50px; height:auto; padding:7px 0; grid-template-columns:1fr; gap:6px; }

@@ -50,12 +50,15 @@
             <button class="button ghost hidden" id="stop-run-all"><span>■</span> Stop</button>
             <button class="button ghost restart-kernel-button" id="restart-kernel-button" title="Restart kernel" aria-label="Restart kernel"><span class="restart-kernel-icon">⟳</span> Restart</button>
             <button class="button ghost" id="global-ai-button" title="Ask about this notebook" aria-label="Open notebook AI assistant">✦ Notebook AI</button>
-            <button class="button ghost notebook-download-button" id="notebook-download" title="Download and notebook actions" aria-label="Download and notebook actions">⇩</button>
+            <button class="button ghost notebook-download-button" id="notebook-download" title="Download notebook" aria-label="Download notebook"><svg class="download-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 19h14"/></svg></button>
             <div class="notebook-actions-menu hidden" id="notebook-download-menu" role="menu">
               <button data-notebook-action="export-ipynb">Download .ipynb</button>
               <button data-notebook-action="export-py">Download .py</button>
               <button data-notebook-action="copy-python">Copy as Python</button>
-              <hr><button data-notebook-action="clear-outputs">Clear all outputs</button>
+            </div>
+            <button class="button ghost notebook-actions-button" id="notebook-actions" title="Notebook actions" aria-label="Notebook actions">•••</button>
+            <div class="notebook-actions-menu hidden" id="notebook-actions-menu" role="menu">
+              <button data-notebook-action="clear-outputs">Clear all outputs</button>
               <button data-notebook-action="collapse-all">Collapse all sections</button>
               <button data-notebook-action="expand-all">Expand all sections</button>
             </div>
