@@ -489,8 +489,6 @@ function queuePythonCheck(cell) {
       cell.diagnostic = result.valid ? null : result;
     } catch (error) { cell.diagnostic = { message: 'Syntax check unavailable' }; }
     BetterNotebookEditor.setDiagnostic(cell.id, [...(cell.diagnostic ? [cell.diagnostic] : []), ...staticDiagnostics(cell.id)]);
-    const diagnostic = document.querySelector(`[data-id="${cell.id}"] .cell-diagnostic`);
-    if (diagnostic) { diagnostic.hidden = !cell.diagnostic; diagnostic.textContent = cell.diagnostic ? `Line ${cell.diagnostic.line || '?'}: ${cell.diagnostic.message}` : ''; }
   }, 500));
 }
 function cellsFromDss(raw) {
@@ -667,21 +665,55 @@ function symbolsBefore(cellId) {
   });
   return [...symbols.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
+function pythonCodeOnly(source) {
+  const characters = [...source];
+  const isIdentifier = value => /[A-Za-z0-9_]/.test(value || '');
+  const escapedAt = index => {
+    let slashes = 0; for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) slashes += 1;
+    return slashes % 2 === 1;
+  };
+  for (let index = 0; index < characters.length;) {
+    const character = source[index];
+    if (character === '#') {
+      while (index < characters.length && source[index] !== '\n') { characters[index] = ' '; index += 1; }
+      continue;
+    }
+    if (character !== '"' && character !== "'") { index += 1; continue; }
+    // Remove f/r/b/u prefixes too: otherwise `f"…"` leaves a phantom `f`
+    // identifier after the literal itself is stripped.
+    let prefixStart = index;
+    while (prefixStart > 0 && /[fFrRbBuU]/.test(source[prefixStart - 1])) prefixStart -= 1;
+    if (prefixStart < index && (prefixStart === 0 || !isIdentifier(source[prefixStart - 1]))) {
+      for (let cursor = prefixStart; cursor < index; cursor += 1) characters[cursor] = ' ';
+    }
+    const delimiter = source.slice(index, index + 3) === character.repeat(3) ? character.repeat(3) : character;
+    for (let cursor = 0; cursor < delimiter.length; cursor += 1) characters[index + cursor] = ' ';
+    index += delimiter.length;
+    while (index < characters.length) {
+      if (source.slice(index, index + delimiter.length) === delimiter && !escapedAt(index)) {
+        for (let cursor = 0; cursor < delimiter.length; cursor += 1) characters[index + cursor] = ' ';
+        index += delimiter.length; break;
+      }
+      characters[index] = source[index] === '\n' ? '\n' : ' '; index += 1;
+    }
+  }
+  return characters.join('');
+}
 function staticDiagnostics(cellId) {
   const cell = getCell(cellId); if (!cell || cell.type !== 'python') return [];
   const known = new Set(symbolsBefore(cellId).map(item => item.name));
   const builtin = new Set(['True', 'False', 'None', 'print', 'len', 'range', 'list', 'dict', 'set', 'str', 'int', 'float', 'sum', 'min', 'max', 'enumerate', 'zip']);
   const declared = new Set(); const findings = [];
-  cell.source.split('\n').forEach((line, index) => {
+  pythonCodeOnly(cell.source).split('\n').forEach((line, index) => {
     const assignment = line.match(/^\s*([A-Za-z_]\w*)\s*=/); if (assignment) declared.add(assignment[1]);
     const imported = line.match(/^\s*import\s+([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?/); if (imported) declared.add(imported[2] || imported[1]);
     const fromImport = line.match(/^\s*from\s+\S+\s+import\s+(.+)/); if (fromImport) fromImport[1].split(',').forEach(name => declared.add(name.trim().split(/\s+as\s+/).pop()));
     const functionDef = line.match(/^\s*(?:def|class)\s+([A-Za-z_]\w*)/); if (functionDef) declared.add(functionDef[1]);
-    const words = line.replace(/(['"]).*?\1/g, '').match(/\b[A-Za-z_]\w*\b/g) || [];
+    const words = line.match(/\b[A-Za-z_]\w*\b/g) || [];
     words.forEach(word => {
       if (known.has(word) || declared.has(word) || builtin.has(word) || /^(import|from|as|def|class|return|for|in|if|else|elif|while|and|or|not|is|with|try|except|pass|lambda|yield|await|async)$/i.test(word)) return;
       if (/^[A-Z]/.test(word) || line.includes(`.${word}`)) return;
-      if (!findings.some(item => item.line === index + 1 && item.message.includes(word))) findings.push({ line: index + 1, column: line.indexOf(word) + 1, severity: 'warning', message: `“${word}” is not defined in an earlier cell` });
+      if (!findings.some(item => item.line === index + 1 && item.message.includes(word))) findings.push({ line: index + 1, column: line.indexOf(word) + 1, length: word.length, severity: 'warning', message: `“${word}” is not defined in an earlier cell` });
     });
   });
   return findings.slice(0, 6);
@@ -1122,12 +1154,13 @@ function updateRenderedRunState(cell) {
 function renderCellMinimap() {
   const tracks = document.querySelector('#cell-minimap-tracks');
   if (!tracks) return;
-  tracks.innerHTML = state.cells.map((cell, index) => {
+  const executableCells = state.cells.filter(cell => cell.type !== 'markdown');
+  tracks.innerHTML = executableCells.map((cell, index) => {
     const detail = executionState(cell);
-    return `<button type="button" class="cell-minimap-track ${detail.status}" data-minimap-cell="${escapeHTML(cell.id)}" title="Cell ${index + 1}: ${escapeHTML(executionLabel(cell) || 'Never run')}"></button>`;
+    return `<button type="button" class="cell-minimap-track ${detail.status}" data-minimap-cell="${escapeHTML(cell.id)}" title="Code cell ${index + 1}: ${escapeHTML(executionLabel(cell) || 'Never run')}"></button>`;
   }).join('');
-  document.querySelector('#minimap-last-run')?.toggleAttribute('disabled', !state.cells.some(cell => executionState(cell).finishedAt || executionState(cell).order));
-  document.querySelector('#minimap-first-failed')?.toggleAttribute('disabled', !state.cells.some(cell => executionState(cell).status === 'failed'));
+  document.querySelector('#minimap-last-run')?.toggleAttribute('disabled', !executableCells.some(cell => executionState(cell).finishedAt || executionState(cell).order));
+  document.querySelector('#minimap-first-failed')?.toggleAttribute('disabled', !executableCells.some(cell => executionState(cell).status === 'failed'));
 }
 function refreshExecutionTimestamps() {
   state.cells.forEach(cell => {
@@ -1190,7 +1223,6 @@ function renderCells() {
     node.querySelector('.cell-output').innerHTML = data.type === 'markdown' && !data.markdownEditing
       ? `<div class="markdown-render" tabindex="0">${markdownMarkup(data.source)}${data.collapsed && section?.collapsedCount ? `<button class="collapsed-section-summary" type="button" data-toggle-section="${escapeHTML(data.id)}">${section.collapsedCount} cell${section.collapsedCount === 1 ? '' : 's'} collapsed</button>` : ''}</div>`
       : outputMarkup(data.output, data.id);
-    const diagnostic = node.querySelector('.cell-diagnostic'); diagnostic.hidden = !data.diagnostic; diagnostic.textContent = data.diagnostic ? `Line ${data.diagnostic.line || '?'}: ${data.diagnostic.message}` : '';
     const meta = node.querySelector('.execution-meta-top');
     const label = executionLabel(data); const icon = executionIcon(executionDetail.status);
     meta.textContent = label ? `${icon ? `${icon} ` : ''}${label}` : '';
@@ -1228,12 +1260,15 @@ function renderCells() {
   });
   renderToolbar(); renderOutline(); renderCellMinimap();
   hydrateRichMime(cellsEl).catch(error => console.warn('Could not hydrate rich outputs.', error));
-  // Removing the focused CodeMirror node can cause browsers to compensate by
-  // scrolling after the first frame. Restore again after layout settles.
+  // Removing a focused CodeMirror node can cause the browser to compensate
+  // after one or more layout frames. This is most visible when the final cell
+  // changes height because there is no content below it. Reapply the captured
+  // viewport after those deferred layouts without calling scrollIntoView.
   requestAnimationFrame(() => {
     restoreRenderScroll(scrollPositions);
     requestAnimationFrame(() => restoreRenderScroll(scrollPositions));
-    window.setTimeout(() => restoreRenderScroll(scrollPositions), 0);
+    window.setTimeout(() => restoreRenderScroll(scrollPositions), 50);
+    window.setTimeout(() => restoreRenderScroll(scrollPositions), 180);
   });
 }
 function renderToolbar() {
@@ -1350,7 +1385,15 @@ async function deleteActiveNotebook() {
 function addFolder() { const modal = document.querySelector('#folder-modal'); modal.classList.remove('hidden'); requestAnimationFrame(() => document.querySelector('#folder-name-input').focus()); }
 function updateCell(id, patch) { const cell = getCell(id); Object.assign(cell, patch); save(); queuePythonCheck(cell); renderOutline(); renderLinkedDatasets(); }
 function insertAfter(id, cell = newCell()) { state.cells.splice(cellIndex(id) + 1, 0, cell); save(); renderCells(); focusCell(cell.id); }
-function focusCell(id, preventScroll = false) { requestAnimationFrame(() => BetterNotebookEditor.focus(id, preventScroll)); }
+function focusCell(id, preventScroll = false) {
+  requestAnimationFrame(() => {
+    BetterNotebookEditor.focus(id, preventScroll);
+    // A cell run rebuilds CodeMirror and then restores the viewport over the
+    // following layout frames. Focus once more after that work so Shift+Enter
+    // always leaves the caret in the next executable cell.
+    requestAnimationFrame(() => { if (state.activeCellId === id) BetterNotebookEditor.focus(id, preventScroll); });
+  });
+}
 function setActiveCell(id) { state.activeCellId = id; document.querySelectorAll('.cell.active').forEach(cell => cell.classList.remove('active')); document.querySelector(`[data-id="${id}"]`)?.classList.add('active'); }
 async function runCell(id) {
   const cell = getCell(id); if (!cell) return;
@@ -1379,10 +1422,10 @@ async function runCell(id) {
   }
 }
 async function runAndAdvance(id) {
-  const nextId = state.cells[cellIndex(id) + 1]?.id;
+  const nextCodeCell = state.cells.slice(cellIndex(id) + 1).find(cell => cell.type !== 'markdown');
   const succeeded = await runCell(id);
   if (!succeeded) return;
-  if (nextId) { setActiveCell(nextId); focusCell(nextId); return; }
+  if (nextCodeCell) { setActiveCell(nextCodeCell.id); focusCell(nextCodeCell.id); return; }
   const newCodeCell = newCell('python'); newCodeCell.source = ''; state.cells.push(newCodeCell); state.activeCellId = newCodeCell.id; save(); renderCells(); focusCell(newCodeCell.id, true);
 }
 function selectCell(id, selected) { selected ? state.selected.add(id) : state.selected.delete(id); renderCells(); }
@@ -1901,10 +1944,10 @@ function revealCell(id) {
 document.querySelector('#cell-minimap')?.addEventListener('click', event => {
   const track = event.target.closest('[data-minimap-cell]'); if (track) { revealCell(track.dataset.minimapCell); return; }
   if (event.target.closest('#minimap-last-run')) {
-    const recent = [...state.cells].filter(cell => executionState(cell).finishedAt || executionState(cell).order).sort((left, right) => (executionState(right).finishedAt || 0) - (executionState(left).finishedAt || 0))[0];
+    const recent = state.cells.filter(cell => cell.type !== 'markdown' && (executionState(cell).finishedAt || executionState(cell).order)).sort((left, right) => (executionState(right).finishedAt || 0) - (executionState(left).finishedAt || 0))[0];
     if (recent) revealCell(recent.id);
   }
-  if (event.target.closest('#minimap-first-failed')) { const failed = state.cells.find(cell => executionState(cell).status === 'failed'); if (failed) revealCell(failed.id); }
+  if (event.target.closest('#minimap-first-failed')) { const failed = state.cells.find(cell => cell.type !== 'markdown' && executionState(cell).status === 'failed'); if (failed) revealCell(failed.id); }
 });
 const dataframeModal = document.querySelector('#dataframe-modal');
 const closeDataframeModal = () => dataframeModal?.classList.add('hidden');
