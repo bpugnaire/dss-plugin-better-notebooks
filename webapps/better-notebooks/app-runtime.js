@@ -1629,10 +1629,18 @@ document.querySelector('#run-all').addEventListener('click', async () => {
   execution.runningAll = false; save(); renderCells(); renderExecutionControls();
 });
 document.querySelector('#stop-run-all').addEventListener('click', () => { execution.stopRequested = true; setSavedState('Stopping after the current cell…'); });
-document.querySelector('#notebook-actions')?.addEventListener('click', () => document.querySelector('#notebook-actions-menu')?.classList.toggle('hidden'));
+document.querySelector('#notebook-download')?.addEventListener('click', () => {
+  document.querySelector('#notebook-download-menu')?.classList.toggle('hidden');
+  document.querySelector('#notebook-actions-menu')?.classList.add('hidden');
+});
+document.querySelector('#notebook-actions')?.addEventListener('click', () => {
+  document.querySelector('#notebook-actions-menu')?.classList.toggle('hidden');
+  document.querySelector('#notebook-download-menu')?.classList.add('hidden');
+});
 document.querySelector('#restart-kernel-button')?.addEventListener('click', () => restartKernel());
-document.querySelector('#notebook-actions-menu')?.addEventListener('click', async event => {
+async function handleNotebookMenuAction(event) {
   const action = event.target.dataset.notebookAction; if (!action) return;
+  document.querySelector('#notebook-download-menu')?.classList.add('hidden');
   document.querySelector('#notebook-actions-menu')?.classList.add('hidden');
   if (action === 'export-ipynb') exportNotebook('ipynb');
   if (action === 'export-py') exportNotebook('py');
@@ -1641,8 +1649,11 @@ document.querySelector('#notebook-actions-menu')?.addEventListener('click', asyn
   if (action === 'restart-kernel') restartKernel();
   if (action === 'collapse-all') { const sections = sectionModel(state.cells); state.cells.filter(cell => sections.sections.get(cell.id)?.collapsedCount).forEach(cell => { cell.collapsed = true; state.collapsedHeadings.add(cell.id); }); save(false); renderCells(); }
   if (action === 'expand-all') { state.cells.forEach(cell => { cell.collapsed = false; }); state.collapsedHeadings.clear(); save(false); renderCells(); }
-});
+}
+document.querySelector('#notebook-download-menu')?.addEventListener('click', handleNotebookMenuAction);
+document.querySelector('#notebook-actions-menu')?.addEventListener('click', handleNotebookMenuAction);
 document.addEventListener('click', event => {
+  if (!event.target.closest('#notebook-download, #notebook-download-menu')) document.querySelector('#notebook-download-menu')?.classList.add('hidden');
   if (!event.target.closest('#notebook-actions, #notebook-actions-menu')) document.querySelector('#notebook-actions-menu')?.classList.add('hidden');
 });
 document.querySelector('#dataset-search').addEventListener('input', event => renderDatasets(event.target.value));

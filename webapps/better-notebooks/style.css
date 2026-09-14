@@ -262,6 +262,48 @@ button { cursor: pointer; }
 .global-ai-conversation-delete { align-self:center; margin:0 7px 0 0; border:0; border-radius:4px; background:transparent; color:#8b9c95; padding:5px; font-size:12px; line-height:1; }
 .global-ai-conversation-delete:hover { background:#ffeceb; color:#a6433c; }
 
+/* Responsive chrome: the workspace owns the available center column, so its
+   controls reflow before they can paint over either resizable side panel. */
+.app-shell { overflow-x:clip; }
+.sidebar,.sidebar-content,.data-panel { min-width:0; overflow:hidden; }
+.sidebar-project-context,.sidebar-project-path,.sidebar-project-actions { min-width:0; max-width:100%; }
+.sidebar-project-path strong,.sidebar-project-path em,.sidebar-project-actions .saved-state { min-width:0; max-width:100%; }
+.new-button,.section-label,.project-notebook-row,.data-panel-title,.dataset-hint,.linked-datasets { min-width:0; max-width:100%; }
+.data-panel .dataset-hint span,.data-panel .linked-datasets span { overflow-wrap:anywhere; }
+.workspace { container-type:inline-size; overflow-x:clip; }
+.notebook-runbar { min-width:0; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; }
+.notebook-runbar .eyebrow { min-width:0; overflow:hidden; }
+.notebook-runbar .executor-selector { max-width:min(260px, 30cqw); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.notebook-runbar .head-actions { min-width:0; flex-wrap:nowrap; gap:6px; }
+.notebook-download-button,.notebook-actions-button { display:grid; place-items:center; width:30px; min-width:30px; padding:0 !important; line-height:1; }
+.notebook-actions-button { font-size:14px !important; letter-spacing:1px; }
+.download-icon { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+#notebook-download-menu { right:36px; }
+#notebook-actions-menu { right:0; }
+.notebook-actions-menu { max-width:min(230px, calc(100vw - 20px)); }
+
+@container (max-width: 860px) {
+  .notebook-runbar { min-height:50px; height:auto; padding:7px 0; grid-template-columns:1fr; gap:6px; }
+  .notebook-runbar .head-actions { justify-self:start; }
+  .notebook-runbar .eyebrow { width:100%; }
+  .notebook-runbar .executor-selector { max-width:42cqw; }
+}
+@container (max-width: 630px) {
+  .notebook-kind,.notebook-runbar .status-pill { display:none; }
+  .notebook-runbar .eyebrow { overflow:visible; }
+  .notebook-runbar .executor-selector { max-width:48cqw; margin-left:0; }
+  .notebook-runbar .executor-selector.secondary { display:none; }
+  .notebook-runbar .head-actions { gap:4px; }
+  #run-all,#stop-run-all,#restart-kernel-button,#global-ai-button { width:30px; min-width:30px; padding:0; font-size:0; justify-content:center; }
+  #run-all span,#stop-run-all span { margin:0; font-size:11px; }
+  #restart-kernel-button .restart-kernel-icon { font-size:18px; }
+  #global-ai-button::after { content:'✦'; font-size:15px; line-height:1; }
+}
+@container (max-width: 390px) {
+  .notebook-runbar .executor-selector { max-width:100%; }
+  .notebook-runbar .head-actions { width:100%; justify-content:space-between; }
+}
+
 /* The chat only summarizes a proposal. The real review happens beside the
    affected cells, so notebook edits retain the familiar IDE staging model. */
 .proposal-file-summary { display:flex; align-items:center; gap:7px; padding:7px 8px; border:1px solid #dcebe3; border-radius:5px; background:#f8fcfa; color:#527166; font:700 9px Manrope,sans-serif; }.proposal-file-summary strong { margin-right:auto; color:#294b3f; }.diff-added { color:#168057; }.diff-removed { color:#bd4a41; }

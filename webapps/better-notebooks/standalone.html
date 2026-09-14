@@ -57,7 +57,7 @@
         <nav class="notebook-tabs" id="notebook-tabs" aria-label="Open notebook tabs"></nav>
 
         <section class="notebook-runbar" aria-label="Notebook execution controls">
-          <div class="eyebrow">PYTHON NOTEBOOK <span class="status-pill" id="kernel-status" data-state="idle">● Idle</span><button class="executor-selector" id="executor-selector">Python 3.11 <span>⌄</span></button><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
+          <div class="eyebrow"><span class="notebook-kind">PYTHON NOTEBOOK</span><span class="status-pill" id="kernel-status" data-state="idle">● Idle</span><button class="executor-selector" id="executor-selector">Python 3.11 <span>⌄</span></button><button class="executor-selector secondary" id="sql-executor-selector">SQL warehouse <span>⌄</span></button></div>
           <div class="head-actions"><button class="button primary" id="run-all"><span>▶</span> Run all</button><button class="button ghost hidden" id="stop-run-all"><span>■</span> Stop</button><button class="button ghost" id="global-ai-button" title="Ask about this notebook" aria-label="Open notebook AI assistant">✦ Notebook AI</button></div>
         </section>
         <section class="notebook-head">
@@ -147,7 +147,7 @@
          the same render path as the DSS webapp. -->
     <span id="datasets-panel-title" hidden>PROJECT DATASETS</span><span id="runtime-notice" hidden></span><div id="linked-datasets" hidden></div><div id="dataset-inspector" class="hidden"></div>
     <div id="notebook-find" hidden><input id="cell-search" /><span id="cell-search-count"></span></div><button id="refresh-datasets" hidden></button><button id="data-panel-toggle" hidden></button><button id="retry-save" class="hidden"></button>
-    <button id="notebook-actions" hidden></button><div id="notebook-actions-menu" class="hidden"></div>
+    <button id="notebook-download" hidden></button><div id="notebook-download-menu" class="hidden"></div><button id="notebook-actions" hidden></button><div id="notebook-actions-menu" class="hidden"></div>
     <div class="modal-backdrop hidden" id="recovery-modal"><section><h2 id="recovery-title">Recovery</h2><p id="recovery-summary"></p><ul id="recovery-diff-list"></ul><button id="restore-recovery-draft"></button><button id="use-dss-version"></button></section></div>
     <div class="modal-backdrop hidden" id="dataframe-modal"><button id="close-dataframe-modal"></button><div id="dataframe-modal-title"></div><div id="dataframe-modal-content"></div></div>
     <script src="app.js"></script>
