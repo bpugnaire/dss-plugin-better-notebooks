@@ -856,6 +856,25 @@ function applyLineEdits(source, edits) {
   [...edits].sort((left, right) => right.startLine - left.startLine).forEach(edit => lines.splice(edit.startLine - 1, edit.endLine - edit.startLine + 1, ...edit.replacement.split('\n')));
   return lines.join('\n');
 }
+function minimalReplacementEdit(beforeSource, afterSource) {
+  if (beforeSource === afterSource || !String(beforeSource || '').length) return [];
+  const before = String(beforeSource).split('\n'); const after = String(afterSource || '').split('\n');
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix += 1;
+  // A pure append has no existing line range. Attach it to the preceding line
+  // so it remains a valid, reviewable edit rather than falling back to a full
+  // cell rewrite.
+  if (prefix === before.length) {
+    const last = before.length - 1;
+    return [{ startLine: last + 1, endLine: last + 1, expected: before[last], replacement: `${before[last]}\n${after.slice(prefix).join('\n')}` }];
+  }
+  const startLine = prefix + 1; const endLine = before.length - suffix;
+  const expected = before.slice(prefix, before.length - suffix).join('\n');
+  const replacement = after.slice(prefix, after.length - suffix).join('\n');
+  return validatedLineEdits(beforeSource, [{ startLine, endLine, expected, replacement }]);
+}
 function sanitizeNotebookProposal(value) {
   if (!value || typeof value !== 'object' || !Array.isArray(value.changes)) throw new Error('The assistant did not return a notebook change set.');
   const validTypes = new Set(['python', 'sql', 'markdown']); const ids = new Set(state.cells.map(cell => cell.id));
@@ -865,7 +884,15 @@ function sanitizeNotebookProposal(value) {
       const cell = getCell(change.cellId); const edits = validatedLineEdits(cell?.source, change.edits);
       return edits.length ? { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, type: cell.type, edits } : null;
     }
-    if (change.op === 'replace_cell' && ids.has(change.cellId) && validTypes.has(change.type || getCell(change.cellId)?.type) && typeof change.source === 'string') return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, type: change.type || getCell(change.cellId).type, source: change.source, beforeSource: getCell(change.cellId)?.source || '' };
+    if (change.op === 'replace_cell' && ids.has(change.cellId) && validTypes.has(change.type || getCell(change.cellId)?.type) && typeof change.source === 'string') {
+      const cell = getCell(change.cellId); const beforeSource = cell?.source || '';
+      const edits = minimalReplacementEdit(beforeSource, change.source);
+      // Preserve genuine full rewrites, but render ordinary model fallbacks as
+      // a narrow in-editor patch so the review stays line-oriented.
+      const changedLines = edits.reduce((count, edit) => count + edit.expected.split('\n').length, 0);
+      if (edits.length && changedLines < Math.max(3, Math.ceil(beforeSource.split('\n').length * 0.8))) return { id: crypto.randomUUID(), op: 'edit_cell', cellId: change.cellId, type: cell.type, edits };
+      return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, type: change.type || cell.type, source: change.source, beforeSource };
+    }
     if (change.op === 'insert_after' && ids.has(change.cellId) && validTypes.has(change.cell?.type) && typeof change.cell?.source === 'string') return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, cell: { type: change.cell.type, source: change.cell.source } };
     if (change.op === 'delete_cell' && ids.has(change.cellId)) return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, beforeSource: getCell(change.cellId)?.source || '' };
     if (change.op === 'create_notebook' && typeof change.name === 'string' && change.name.trim() && Array.isArray(change.cells) && change.cells.every(cell => validTypes.has(cell?.type) && typeof cell.source === 'string')) return { id: crypto.randomUUID(), op: change.op, name: change.name.trim().slice(0, 100), cells: change.cells.map(cell => ({ type: cell.type, source: cell.source })) };

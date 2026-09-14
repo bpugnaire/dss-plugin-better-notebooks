@@ -493,8 +493,21 @@ The snapshot may include activeCell and selectedCellIds. When the user says "thi
                 answer = raw[answer_start + len("<answer>"):answer_end]
                 if len(answer) > answer_offset:
                     yield event("delta", {"text": answer[answer_offset:]})
+                changes_text = raw[changes_start + len("<changes>"):changes_end].strip()
+                # Some otherwise valid coding models wrap the machine block in
+                # a JSON fence or append a short explanation before closing the
+                # tag. Decode the first JSON object rather than rejecting a
+                # complete proposal because of harmless surrounding text.
+                if changes_text.startswith("```"):
+                    changes_text = re.sub(r"^```(?:json)?\\s*", "", changes_text, count=1, flags=re.IGNORECASE)
+                    changes_text = re.sub(r"\\s*```$", "", changes_text)
                 try:
-                    proposal = json.loads(raw[changes_start + len("<changes>"):changes_end].strip())
+                    first_object = changes_text.find("{")
+                    if first_object < 0:
+                        raise ValueError("missing JSON object")
+                    proposal, _ = json.JSONDecoder().raw_decode(changes_text[first_object:])
+                    if not isinstance(proposal, dict) or not isinstance(proposal.get("changes"), list):
+                        raise ValueError("proposal has no changes array")
                 except Exception:
                     yield event("error", {"error": "Notebook AI returned invalid proposed changes. Please retry."})
                     return
