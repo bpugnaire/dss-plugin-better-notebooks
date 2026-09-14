@@ -808,7 +808,8 @@ async function askCellAi(id, question, mode = 'rewrite') {
     renderCells(); return;
   }
   const baseSource = cell.source;
-  cell.ai = { ...(cell.ai || {}), open: true, question, mode: 'rewrite', loading: true, error: '', response: '', baseSource, proposedSource: '' };
+  // The request is already in flight; do not retain it in the compact editor.
+  cell.ai = { ...(cell.ai || {}), open: true, question: '', mode: 'rewrite', loading: true, error: '', response: '', baseSource, proposedSource: '' };
   renderCells();
   try {
     const error = cell.output?.outputs?.find(output => output.output_type === 'error');
