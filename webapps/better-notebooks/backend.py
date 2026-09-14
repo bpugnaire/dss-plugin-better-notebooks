@@ -427,11 +427,12 @@ The answer must never contain JSON, implementation protocol, or these tags. The 
 Use this exact JSON schema inside the changes block:
 {"message":"short explanation","changes":[...]}
 Each change must be one of:
+{"op":"edit_cell","cellId":"existing cell id","edits":[{"startLine":1,"endLine":1,"expected":"exact existing lines","replacement":"replacement lines"}]}
 {"op":"replace_cell","cellId":"existing cell id","source":"complete replacement source","type":"python|sql|markdown"}
 {"op":"insert_after","cellId":"existing cell id","cell":{"type":"python|sql|markdown","source":"source"}}
 {"op":"delete_cell","cellId":"existing cell id"}
 {"op":"create_notebook","name":"new notebook name","cells":[{"type":"python|sql|markdown","source":"source"}]}
-Use only existing cell ids in replace/insert/delete. Never execute code. Propose the smallest useful change set; if no edit is requested, return an empty changes list.
+For an edit to an existing cell, use edit_cell by default. Each edit must cover the smallest affected consecutive line range and its expected text must exactly match the current source. Preserve every unaffected line. Use replace_cell only for a genuine whole-cell rewrite where most lines change. Use only existing cell ids in edit/replace/insert/delete. Never execute code. Propose the smallest useful change set; if no edit is requested, return an empty changes list.
 The snapshot may include activeCell and selectedCellIds. When the user says "this cell", "the selected cell", or refers to a cell discussed earlier, use that context and the conversation history to identify the target. Only ask a clarification when no target or intended change can be inferred."""
     history_lines = []
     if isinstance(history, list):

@@ -1,5 +1,5 @@
-import { EditorState } from '@codemirror/state';
-import { EditorView, keymap, hoverTooltip } from '@codemirror/view';
+import { EditorState, StateEffect, StateField } from '@codemirror/state';
+import { EditorView, keymap, hoverTooltip, Decoration, WidgetType } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, startCompletion } from '@codemirror/autocomplete';
 import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language';
@@ -10,6 +10,32 @@ import { markdown } from '@codemirror/lang-markdown';
 
 const editors = new Map();
 const silentUpdates = new Set();
+const setReviewEditsEffect = StateEffect.define();
+class ProposedLinesWidget extends WidgetType {
+  constructor(source) { super(); this.source = source; }
+  eq(other) { return other.source === this.source; }
+  toDOM() { const node = document.createElement('pre'); node.className = 'cm-ai-review-added'; node.textContent = this.source; return node; }
+  ignoreEvent() { return true; }
+}
+function reviewDecorations(state, edits) {
+  const decorations = [];
+  edits.forEach(edit => {
+    const startLine = Math.max(1, Math.min(edit.startLine, state.doc.lines));
+    const endLine = Math.max(startLine, Math.min(edit.endLine, state.doc.lines));
+    const from = state.doc.line(startLine).from; const to = state.doc.line(endLine).to;
+    for (let line = startLine; line <= endLine; line += 1) decorations.push({ from: state.doc.line(line).from, to: state.doc.line(line).from, value: Decoration.line({ class: 'cm-ai-review-removed' }) });
+    decorations.push({ from: to, to, value: Decoration.widget({ widget: new ProposedLinesWidget(edit.replacement), block: true, side: 1 }) });
+  });
+  return Decoration.set(decorations.sort((left, right) => left.from - right.from || left.to - right.to), true);
+}
+const reviewDiffField = StateField.define({
+  create() { return Decoration.none; },
+  update(decorations, transaction) {
+    for (const effect of transaction.effects) if (effect.is(setReviewEditsEffect)) return reviewDecorations(transaction.state, effect.value);
+    return transaction.docChanged ? Decoration.none : decorations.map(transaction.changes);
+  },
+  provide: field => EditorView.decorations.from(field),
+});
 const notebookLightTheme = EditorView.theme({
   '&': { backgroundColor: '#ffffff', color: '#2d2932' },
   '.cm-content': { caretColor: '#5d42c6' },
@@ -146,7 +172,7 @@ export function mount({ id, parent, source, type, datasets, symbols = [], connec
     state: EditorState.create({
       doc: source,
       extensions: [
-        history(), language, notebookLightTheme, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(),
+        history(), language, notebookLightTheme, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(), reviewDiffField,
         autocompletion({ override: [completionSource(type, datasets, symbols, connections, onComplete)], activateOnTyping: true, activateOnTypingDelay: 120 }), hoverFor(datasets, symbols, connections, onInspect),
         linter(() => []),
         keymap.of([
@@ -191,6 +217,11 @@ export function replaceSource(id, source, silent = false) {
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   if (silent) silentUpdates.delete(id);
   view.focus();
+}
+
+export function setReviewEdits(id, edits = []) {
+  const view = editors.get(id); if (!view) return;
+  view.dispatch({ effects: setReviewEditsEffect.of(Array.isArray(edits) ? edits : []) });
 }
 
 export function focus(id, preventScroll = false) {

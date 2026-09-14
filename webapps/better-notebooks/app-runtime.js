@@ -839,11 +839,32 @@ function notebookAssistantSnapshot() {
     cells: state.cells.map(cell => ({ id: cell.id, type: cell.type, source: cell.source })),
   };
 }
+function validatedLineEdits(source, edits) {
+  if (!Array.isArray(edits) || !edits.length) return [];
+  const lines = String(source || '').split('\n'); const accepted = [];
+  for (const edit of edits) {
+    const startLine = Number(edit?.startLine); const endLine = Number(edit?.endLine);
+    if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 1 || endLine < startLine || endLine > lines.length || typeof edit.expected !== 'string' || typeof edit.replacement !== 'string') continue;
+    const expected = lines.slice(startLine - 1, endLine).join('\n');
+    if (expected !== edit.expected || expected === edit.replacement || accepted.some(previous => startLine <= previous.endLine && endLine >= previous.startLine)) continue;
+    accepted.push({ startLine, endLine, expected, replacement: edit.replacement });
+  }
+  return accepted.sort((left, right) => left.startLine - right.startLine);
+}
+function applyLineEdits(source, edits) {
+  const lines = String(source || '').split('\n');
+  [...edits].sort((left, right) => right.startLine - left.startLine).forEach(edit => lines.splice(edit.startLine - 1, edit.endLine - edit.startLine + 1, ...edit.replacement.split('\n')));
+  return lines.join('\n');
+}
 function sanitizeNotebookProposal(value) {
   if (!value || typeof value !== 'object' || !Array.isArray(value.changes)) throw new Error('The assistant did not return a notebook change set.');
   const validTypes = new Set(['python', 'sql', 'markdown']); const ids = new Set(state.cells.map(cell => cell.id));
   const changes = value.changes.map(change => {
     if (!change || typeof change !== 'object') return null;
+    if (change.op === 'edit_cell' && ids.has(change.cellId)) {
+      const cell = getCell(change.cellId); const edits = validatedLineEdits(cell?.source, change.edits);
+      return edits.length ? { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, type: cell.type, edits } : null;
+    }
     if (change.op === 'replace_cell' && ids.has(change.cellId) && validTypes.has(change.type || getCell(change.cellId)?.type) && typeof change.source === 'string') return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, type: change.type || getCell(change.cellId).type, source: change.source, beforeSource: getCell(change.cellId)?.source || '' };
     if (change.op === 'insert_after' && ids.has(change.cellId) && validTypes.has(change.cell?.type) && typeof change.cell?.source === 'string') return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, cell: { type: change.cell.type, source: change.cell.source } };
     if (change.op === 'delete_cell' && ids.has(change.cellId)) return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, beforeSource: getCell(change.cellId)?.source || '' };
@@ -859,6 +880,7 @@ function stagedProposal() {
 function proposalLineCounts(proposal) {
   return (proposal?.changes || []).reduce((counts, change) => {
     const lines = source => String(source || '').split('\n').filter(Boolean).length;
+    if (change.op === 'edit_cell') change.edits.forEach(edit => { counts.added += lines(edit.replacement); counts.removed += lines(edit.expected); });
     if (change.op === 'replace_cell') { counts.added += lines(change.source); counts.removed += lines(change.beforeSource); }
     if (change.op === 'insert_after') counts.added += lines(change.cell.source);
     if (change.op === 'delete_cell') counts.removed += lines(change.beforeSource);
@@ -875,10 +897,14 @@ function proposalDiffMarkup(proposal) {
   return `<header><div><span class="eyebrow">STAGED NOTEBOOK DIFF</span><strong>${escapeHTML(notebook?.name || 'notebook')}.${extension}</strong></div><button class="icon-button" data-global-ai-reject title="Reject all staged changes" aria-label="Reject all staged changes">×</button></header><div class="proposal-file-summary"><strong>${proposal.changes.length} staged cell change${proposal.changes.length === 1 ? '' : 's'}</strong><span class="diff-added">+${counts.added}</span><span class="diff-removed">−${counts.removed}</span></div><p>${escapeHTML(proposal.message)}${proposal.changes.length ? ' Review each change directly in the notebook.' : ''}</p>${actions}`;
 }
 function inlineProposalMarkup(change) {
+  if (change.op === 'edit_cell') return '';
   if (change.op === 'replace_cell') return `<section class="inline-ai-review replace" data-staged-change="${escapeHTML(change.id)}"><header><span>✦ AI proposed edit</span><span class="staged-kind">${escapeHTML(change.type)}</span><div><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Reject</button><button class="accept" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Accept</button></div></header><div class="inline-ai-diff"><pre><del>${escapeHTML(change.beforeSource)}</del><ins>${escapeHTML(change.source)}</ins></pre></div></section>`;
   if (change.op === 'delete_cell') return `<section class="inline-ai-review delete" data-staged-change="${escapeHTML(change.id)}"><header><span>✦ AI proposed deletion</span><div><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Keep cell</button><button class="accept danger" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Delete cell</button></div></header><pre><del>${escapeHTML(change.beforeSource)}</del></pre></section>`;
   if (change.op === 'insert_after') return `<section class="inline-ai-review insert" data-staged-change="${escapeHTML(change.id)}"><header><span>✦ AI proposed new ${escapeHTML(change.cell.type)} cell</span><div><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Reject</button><button class="accept" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Add cell</button></div></header><pre><ins>${escapeHTML(change.cell.source)}</ins></pre></section>`;
   return '';
+}
+function stagedEditControlsMarkup(change) {
+  return `<div class="cell-ai-staged-controls" data-staged-change="${escapeHTML(change.id)}"><button data-staged-action="reject" data-staged-change-id="${escapeHTML(change.id)}">Reject</button><button class="accept" data-staged-action="accept" data-staged-change-id="${escapeHTML(change.id)}">Accept</button></div>`;
 }
 function globalConversationPreview(conversation) {
   const userMessages = conversation.messages.filter(message => message.role === 'user');
@@ -939,6 +965,14 @@ async function applyGlobalAssistantProposal() {
 async function applyGlobalAssistantProposalChange(changeId) {
   const conversation = activeGlobalConversation(); const proposal = conversation.proposal;
   const change = proposal?.changes?.find(item => item.id === changeId); if (!change) return;
+  if (change.op === 'edit_cell') {
+    const cell = getCell(change.cellId);
+    if (cell) {
+      const currentEdits = validatedLineEdits(cell.source, change.edits);
+      if (currentEdits.length !== change.edits.length) throw new Error('This cell changed after the AI proposal was created. Reject the stale proposal and ask again.');
+      cell.source = applyLineEdits(cell.source, currentEdits); cell.output = ''; cell.meta = ''; queuePythonCheck(cell); save();
+    }
+  }
   if (change.op === 'replace_cell') { const cell = getCell(change.cellId); if (cell) { Object.assign(cell, { type: change.type, source: change.source, output: '', meta: '' }); queuePythonCheck(cell); save(); } }
   if (change.op === 'insert_after') { const index = cellIndex(change.cellId); if (index >= 0) { state.cells.splice(index + 1, 0, { ...newCell(change.cell.type), source: change.cell.source }); save(); } }
   if (change.op === 'delete_cell' && state.cells.length > 1) { state.cells = state.cells.filter(cell => cell.id !== change.cellId); save(); }
@@ -1097,9 +1131,11 @@ function renderCells() {
     node.querySelector('.cell-footer').hidden = true;
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     if (executionDetail.status === 'running') { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
-    const cellChanges = (proposal?.changes || []).filter(change => ['replace_cell', 'delete_cell'].includes(change.op) && change.cellId === data.id);
+    const cellChanges = (proposal?.changes || []).filter(change => ['edit_cell', 'replace_cell', 'delete_cell'].includes(change.op) && change.cellId === data.id);
     if (cellChanges.length) {
       node.classList.add('has-staged-ai-change');
+      const lineEdits = cellChanges.filter(change => change.op === 'edit_cell');
+      if (lineEdits.length) node.querySelector('.cell-actions').insertAdjacentHTML('afterbegin', lineEdits.map(stagedEditControlsMarkup).join(''));
       node.querySelector('.cell-footer').insertAdjacentHTML('beforebegin', cellChanges.map(inlineProposalMarkup).join(''));
     }
     cellsEl.appendChild(node);
@@ -1112,6 +1148,7 @@ function renderCells() {
         id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS, symbols: () => symbolsBefore(data.id), connections: projectContext.connections,
         onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id), onInspect: ({ code, pos }) => inspectInDssKernel(activeNotebook(), code, pos), onComplete: ({ code, pos }) => completeInDssKernel(activeNotebook(), code, pos),
       });
+      editorApi.setReviewEdits(data.id, cellChanges.filter(change => change.op === 'edit_cell').flatMap(change => change.edits));
       editorApi.setDiagnostic(data.id, [...(data.diagnostic ? [data.diagnostic] : []), ...staticDiagnostics(data.id)]);
     }
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.dataset.dropIndex = String(index + 1); gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
