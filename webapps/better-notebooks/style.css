@@ -253,6 +253,7 @@ button { cursor: pointer; }
    not accidentally open it. */
 .global-ai-drawer:not(.conversation-list-mode) .global-ai-messages { align-self:stretch; }
 .global-ai-compose,.global-ai-note { align-self:end; }
+.global-ai-proposal { align-self:start; height:auto; min-height:0; max-height:min(34vh, 320px); }
 .global-ai-conversation-card { align-items:stretch; padding:0; overflow:hidden; }
 .global-ai-conversation-open { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 8px; min-width:0; padding:9px; border:0; background:transparent; color:inherit; text-align:left; }
 .global-ai-conversation-open strong { overflow:hidden; color:#193d32; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
