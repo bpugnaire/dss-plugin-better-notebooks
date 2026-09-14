@@ -871,6 +871,17 @@ function minimalReplacementEdit(beforeSource, afterSource) {
     return [{ startLine: last + 1, endLine: last + 1, expected: before[last], replacement: `${before[last]}\n${after.slice(prefix).join('\n')}` }];
   }
   const startLine = prefix + 1; const endLine = before.length - suffix;
+  if (endLine < startLine) {
+    const inserted = after.slice(prefix, after.length - suffix).join('\n');
+    // The protocol uses a non-empty line range. Anchor a middle insertion to
+    // its neighboring source line, retaining that line in the replacement.
+    if (prefix > 0) {
+      const anchor = before[prefix - 1];
+      return validatedLineEdits(beforeSource, [{ startLine: prefix, endLine: prefix, expected: anchor, replacement: `${anchor}\n${inserted}` }]);
+    }
+    const anchor = before[0];
+    return validatedLineEdits(beforeSource, [{ startLine: 1, endLine: 1, expected: anchor, replacement: `${inserted}\n${anchor}` }]);
+  }
   const expected = before.slice(prefix, before.length - suffix).join('\n');
   const replacement = after.slice(prefix, after.length - suffix).join('\n');
   return validatedLineEdits(beforeSource, [{ startLine, endLine, expected, replacement }]);
@@ -886,11 +897,11 @@ function sanitizeNotebookProposal(value) {
     }
     if (change.op === 'replace_cell' && ids.has(change.cellId) && validTypes.has(change.type || getCell(change.cellId)?.type) && typeof change.source === 'string') {
       const cell = getCell(change.cellId); const beforeSource = cell?.source || '';
+      if (change.source === beforeSource) return null;
       const edits = minimalReplacementEdit(beforeSource, change.source);
-      // Preserve genuine full rewrites, but render ordinary model fallbacks as
-      // a narrow in-editor patch so the review stays line-oriented.
-      const changedLines = edits.reduce((count, edit) => count + edit.expected.split('\n').length, 0);
-      if (edits.length && changedLines < Math.max(3, Math.ceil(beforeSource.split('\n').length * 0.8))) return { id: crypto.randomUUID(), op: 'edit_cell', cellId: change.cellId, type: cell.type, edits };
+      // Normalize model fallbacks into an in-editor patch. Even a broad edit
+      // stays in the cell, rather than reverting to the old under-cell card.
+      if (edits.length) return { id: crypto.randomUUID(), op: 'edit_cell', cellId: change.cellId, type: cell.type, edits };
       return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, type: change.type || cell.type, source: change.source, beforeSource };
     }
     if (change.op === 'insert_after' && ids.has(change.cellId) && validTypes.has(change.cell?.type) && typeof change.cell?.source === 'string') return { id: crypto.randomUUID(), op: change.op, cellId: change.cellId, cell: { type: change.cell.type, source: change.cell.source } };
