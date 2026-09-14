@@ -794,7 +794,9 @@ function aiHelpMarkup(cell) {
   if (!cell.ai?.open) return '';
   const applying = cell.ai.loading ? '<div class="cell-ai-applying">✦ Updating this cell…</div>' : '';
   const error = cell.ai.error ? `<div class="cell-ai-error">${escapeHTML(cell.ai.error)}</div>` : '';
-  return `<section class="cell-ai-panel"><header><span>✦ AI edit</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI edit">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Fix likely bugs while preserving the intent">Fix bugs</button><button type="button" data-ai-prompt="Make this clearer and more idiomatic while preserving behaviour">Improve</button><button type="button" data-ai-prompt="Add concise documentation where useful">Document</button></div><div class="cell-ai-compose"><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Describe the change · Enter to apply · Shift+Enter for a new line">${escapeHTML(cell.ai.question || '')}</textarea><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Applying…' : 'Apply'}</button></div>${applying}${error}</section>`;
+  const review = cell.ai.proposedSource && !cell.ai.loading
+    ? `<div class="cell-ai-review"><span>AI edit ready for review</span><div><button type="button" data-ai-review-action="reject" data-ai-review-cell="${escapeHTML(cell.id)}">Reject</button><button type="button" class="accept" data-ai-review-action="accept" data-ai-review-cell="${escapeHTML(cell.id)}">Accept</button></div></div>` : '';
+  return `<section class="cell-ai-panel"><header><span>✦ AI edit</span><span>${escapeHTML(aiAssistant.models.find(model => model.id === aiAssistant.modelId)?.label || 'LLM Mesh')}</span><button type="button" data-ai-close="${escapeHTML(cell.id)}" aria-label="Close AI edit">×</button></header><div class="cell-ai-prompts"><button type="button" data-ai-prompt="Fix likely bugs while preserving the intent">Fix bugs</button><button type="button" data-ai-prompt="Make this clearer and more idiomatic while preserving behaviour">Improve</button><button type="button" data-ai-prompt="Add concise documentation where useful">Document</button></div><div class="cell-ai-compose"><textarea data-ai-question="${escapeHTML(cell.id)}" placeholder="Describe the change · Enter to apply · Shift+Enter for a new line">${escapeHTML(cell.ai.question || '')}</textarea><button type="button" class="button primary" data-ai-send="${escapeHTML(cell.id)}" ${cell.ai.loading ? 'disabled' : ''}>${cell.ai.loading ? 'Applying…' : 'Apply'}</button></div>${applying}${error}${review}</section>`;
 }
 function focusAiQuestion(id) {
   requestAnimationFrame(() => document.querySelector(`[data-id="${id}"] [data-ai-question]`)?.focus());
@@ -805,7 +807,8 @@ async function askCellAi(id, question, mode = 'rewrite') {
     cell.ai = { ...(cell.ai || {}), loading: false, error: 'No LLM Mesh coding model is available for this project.' };
     renderCells(); return;
   }
-  cell.ai = { ...(cell.ai || {}), open: true, question, mode: 'rewrite', loading: true, error: '', response: '' };
+  const baseSource = cell.source;
+  cell.ai = { ...(cell.ai || {}), open: true, question, mode: 'rewrite', loading: true, error: '', response: '', baseSource, proposedSource: '' };
   renderCells();
   try {
     const error = cell.output?.outputs?.find(output => output.output_type === 'error');
@@ -813,16 +816,31 @@ async function askCellAi(id, question, mode = 'rewrite') {
     await dssStreamRequest('ai-help/stream', { modelId: aiAssistant.modelId, notebookName: activeNotebook().name, question, mode, error: error ? `${error.ename || 'Error'}: ${error.evalue || ''}` : '', cell: { language: cell.type, source: cell.source } }, (event, payload) => {
       if (event === 'delta') {
         const response = `${cell.ai.response || ''}${payload.text || ''}`;
-        cell.ai = { ...cell.ai, response };
-        cell.source = response; BetterNotebookEditor.replaceSource(id, response, true);
-        updateRenderedCellOutput(cell);
+        cell.ai = { ...cell.ai, response, proposedSource: response };
+        BetterNotebookEditor.setReviewEdits(id, minimalReplacementEdit(baseSource, response));
       }
       if (event === 'error') streamError = payload.error || 'LLM Mesh did not complete the request.';
     });
-    cell.ai = { ...cell.ai, loading: false, response: cell.ai.response || (streamError ? '' : 'The model returned no text.'), error: streamError };
-    if (!streamError && cell.ai.response) { save(); queuePythonCheck(cell); renderOutline(); renderLinkedDatasets(); }
+    const proposedSource = streamError ? '' : cell.ai.response;
+    cell.ai = { ...cell.ai, loading: false, response: cell.ai.response || (streamError ? '' : 'The model returned no text.'), proposedSource, error: streamError };
   } catch (error) {
     cell.ai = { ...cell.ai, loading: false, error: error.message || 'AI help failed.' };
+  }
+  renderCells();
+}
+function resolveCellAiReview(id, accept) {
+  const cell = getCell(id); const review = cell?.ai;
+  if (!cell || !review?.proposedSource) return;
+  if (accept && cell.source !== review.baseSource) {
+    cell.ai = { ...review, error: 'This cell changed while the AI edit was being prepared. Reject it and ask again.' };
+    renderCells(); return;
+  }
+  if (accept) {
+    cell.source = review.proposedSource; cell.output = ''; cell.meta = '';
+    cell.ai = { ...review, proposedSource: '', baseSource: '', response: '', error: '' };
+    queuePythonCheck(cell); save(); renderOutline(); renderLinkedDatasets();
+  } else {
+    cell.ai = { ...review, proposedSource: '', baseSource: '', response: '', error: '' };
   }
   renderCells();
 }
@@ -1183,12 +1201,15 @@ function renderCells() {
     node.querySelector('.more-cell').setAttribute('aria-label', `More actions for cell ${index + 1}`);
     if (executionDetail.status === 'running') { const run = node.querySelector('.run-cell'); run.classList.add('is-running'); run.title = 'Interrupt execution'; run.setAttribute('aria-label', 'Interrupt execution'); }
     const cellChanges = (proposal?.changes || []).filter(change => ['edit_cell', 'replace_cell', 'delete_cell'].includes(change.op) && change.cellId === data.id);
+    const inCellReviewEdits = data.ai?.proposedSource && data.ai.baseSource === data.source
+      ? minimalReplacementEdit(data.source, data.ai.proposedSource) : [];
     if (cellChanges.length) {
       node.classList.add('has-staged-ai-change');
       const lineEdits = cellChanges.filter(change => change.op === 'edit_cell');
       if (lineEdits.length) node.querySelector('.cell-actions').insertAdjacentHTML('afterbegin', lineEdits.map(stagedEditControlsMarkup).join(''));
       node.querySelector('.cell-footer').insertAdjacentHTML('beforebegin', cellChanges.map(inlineProposalMarkup).join(''));
     }
+    if (inCellReviewEdits.length) node.classList.add('has-staged-ai-change');
     cellsEl.appendChild(node);
     const insertedChanges = (proposal?.changes || []).filter(change => change.op === 'insert_after' && change.cellId === data.id);
     insertedChanges.forEach(change => {
@@ -1199,7 +1220,7 @@ function renderCells() {
         id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS, symbols: () => symbolsBefore(data.id), connections: projectContext.connections,
         onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id), onRunAndAdvance: () => runAndAdvance(data.id), onInspect: ({ code, pos }) => inspectInDssKernel(activeNotebook(), code, pos), onComplete: ({ code, pos }) => completeInDssKernel(activeNotebook(), code, pos),
       });
-      editorApi.setReviewEdits(data.id, cellChanges.filter(change => change.op === 'edit_cell').flatMap(change => change.edits));
+      editorApi.setReviewEdits(data.id, [...cellChanges.filter(change => change.op === 'edit_cell').flatMap(change => change.edits), ...inCellReviewEdits]);
       editorApi.setDiagnostic(data.id, [...(data.diagnostic ? [data.diagnostic] : []), ...staticDiagnostics(data.id)]);
     }
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.dataset.dropIndex = String(index + 1); gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
@@ -1482,6 +1503,8 @@ cellsEl.addEventListener('click', event => {
   setActiveCell(id);
   if (event.target.closest('.ai-help')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: true, loading: false, error: '' }; renderCells(); focusAiQuestion(id); return; }
   if (event.target.closest('[data-ai-close]')) { const target = getCell(id); target.ai = { ...(target.ai || {}), open: false }; renderCells(); return; }
+  const aiReviewAction = event.target.closest('[data-ai-review-action]');
+  if (aiReviewAction) { resolveCellAiReview(id, aiReviewAction.dataset.aiReviewAction === 'accept'); return; }
   const aiPrompt = event.target.closest('[data-ai-prompt]');
   if (aiPrompt) { askCellAi(id, aiPrompt.dataset.aiPrompt); return; }
   const aiSend = event.target.closest('[data-ai-send]');
