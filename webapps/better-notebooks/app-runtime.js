@@ -665,17 +665,51 @@ function symbolsBefore(cellId) {
   });
   return [...symbols.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
+function pythonCodeOnly(source) {
+  const characters = [...source];
+  const isIdentifier = value => /[A-Za-z0-9_]/.test(value || '');
+  const escapedAt = index => {
+    let slashes = 0; for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) slashes += 1;
+    return slashes % 2 === 1;
+  };
+  for (let index = 0; index < characters.length;) {
+    const character = source[index];
+    if (character === '#') {
+      while (index < characters.length && source[index] !== '\n') { characters[index] = ' '; index += 1; }
+      continue;
+    }
+    if (character !== '"' && character !== "'") { index += 1; continue; }
+    // Remove f/r/b/u prefixes too: otherwise `f"…"` leaves a phantom `f`
+    // identifier after the literal itself is stripped.
+    let prefixStart = index;
+    while (prefixStart > 0 && /[fFrRbBuU]/.test(source[prefixStart - 1])) prefixStart -= 1;
+    if (prefixStart < index && (prefixStart === 0 || !isIdentifier(source[prefixStart - 1]))) {
+      for (let cursor = prefixStart; cursor < index; cursor += 1) characters[cursor] = ' ';
+    }
+    const delimiter = source.slice(index, index + 3) === character.repeat(3) ? character.repeat(3) : character;
+    for (let cursor = 0; cursor < delimiter.length; cursor += 1) characters[index + cursor] = ' ';
+    index += delimiter.length;
+    while (index < characters.length) {
+      if (source.slice(index, index + delimiter.length) === delimiter && !escapedAt(index)) {
+        for (let cursor = 0; cursor < delimiter.length; cursor += 1) characters[index + cursor] = ' ';
+        index += delimiter.length; break;
+      }
+      characters[index] = source[index] === '\n' ? '\n' : ' '; index += 1;
+    }
+  }
+  return characters.join('');
+}
 function staticDiagnostics(cellId) {
   const cell = getCell(cellId); if (!cell || cell.type !== 'python') return [];
   const known = new Set(symbolsBefore(cellId).map(item => item.name));
   const builtin = new Set(['True', 'False', 'None', 'print', 'len', 'range', 'list', 'dict', 'set', 'str', 'int', 'float', 'sum', 'min', 'max', 'enumerate', 'zip']);
   const declared = new Set(); const findings = [];
-  cell.source.split('\n').forEach((line, index) => {
+  pythonCodeOnly(cell.source).split('\n').forEach((line, index) => {
     const assignment = line.match(/^\s*([A-Za-z_]\w*)\s*=/); if (assignment) declared.add(assignment[1]);
     const imported = line.match(/^\s*import\s+([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?/); if (imported) declared.add(imported[2] || imported[1]);
     const fromImport = line.match(/^\s*from\s+\S+\s+import\s+(.+)/); if (fromImport) fromImport[1].split(',').forEach(name => declared.add(name.trim().split(/\s+as\s+/).pop()));
     const functionDef = line.match(/^\s*(?:def|class)\s+([A-Za-z_]\w*)/); if (functionDef) declared.add(functionDef[1]);
-    const words = line.replace(/(['"]).*?\1/g, '').match(/\b[A-Za-z_]\w*\b/g) || [];
+    const words = line.match(/\b[A-Za-z_]\w*\b/g) || [];
     words.forEach(word => {
       if (known.has(word) || declared.has(word) || builtin.has(word) || /^(import|from|as|def|class|return|for|in|if|else|elif|while|and|or|not|is|with|try|except|pass|lambda|yield|await|async)$/i.test(word)) return;
       if (/^[A-Z]/.test(word) || line.includes(`.${word}`)) return;
