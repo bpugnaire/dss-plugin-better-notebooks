@@ -49,6 +49,7 @@
             <button class="button primary" id="run-all"><span>▶</span> Run all</button>
             <button class="button ghost hidden" id="stop-run-all"><span>■</span> Stop</button>
             <button class="button ghost restart-kernel-button" id="restart-kernel-button" title="Restart kernel" aria-label="Restart kernel"><span class="restart-kernel-icon">⟳</span> Restart</button>
+            <button class="button ghost" id="global-ai-button" title="Ask about this notebook" aria-label="Open notebook AI assistant">✦ Notebook AI</button>
             <button class="button ghost" id="notebook-actions" title="Notebook actions" aria-label="Notebook actions">•••</button>
             <div class="notebook-actions-menu hidden" id="notebook-actions-menu" role="menu">
               <button data-notebook-action="export-ipynb">Download .ipynb</button>
@@ -103,6 +104,14 @@
         <div class="linked-datasets"><strong>LINKED IN THIS NOTEBOOK</strong><div id="linked-datasets"></div></div>
       </aside>
     </div>
+    <aside class="global-ai-drawer hidden" id="global-ai-drawer" aria-label="Notebook AI assistant">
+      <header><div><span class="eyebrow">NOTEBOOK AI</span><strong>Reviewable notebook changes</strong></div><button class="icon-button" id="close-global-ai" aria-label="Close notebook AI">×</button></header>
+      <div class="global-ai-conversations"><button class="button ghost" id="new-global-ai-conversation">+ New conversation</button><select id="global-ai-conversation-selector" aria-label="Notebook AI conversation"></select></div>
+      <div class="global-ai-messages" id="global-ai-messages" aria-live="polite"></div>
+      <section class="global-ai-proposal hidden" id="global-ai-proposal"></section>
+      <form class="global-ai-compose" id="global-ai-form"><textarea id="global-ai-input" placeholder="Ask about this notebook or request an edit…" required></textarea><button class="button primary" type="submit" id="global-ai-send">Ask</button></form>
+      <p class="global-ai-note">The active notebook is sent to the selected LLM Mesh model. Proposed edits are not saved until accepted.</p>
+    </aside>
     <template id="cell-template">
       <article class="cell">
         <div class="cell-rail"><button class="section-collapse hidden" type="button" title="Collapse section" aria-label="Collapse section">⌄</button><button class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</button><input class="cell-check" type="checkbox" aria-label="Select cell" /></div>
