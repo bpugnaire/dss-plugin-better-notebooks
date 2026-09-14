@@ -3,7 +3,7 @@ import { EditorView, keymap, hoverTooltip, Decoration, WidgetType } from '@codem
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { acceptCompletion, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, startCompletion } from '@codemirror/autocomplete';
 import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language';
-import { linter, setDiagnostics } from '@codemirror/lint';
+import { setDiagnostics } from '@codemirror/lint';
 import { python } from '@codemirror/lang-python';
 import { sql } from '@codemirror/lang-sql';
 import { markdown } from '@codemirror/lang-markdown';
@@ -174,7 +174,6 @@ export function mount({ id, parent, source, type, datasets, symbols = [], connec
       extensions: [
         history(), language, notebookLightTheme, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(), reviewDiffField,
         autocompletion({ override: [completionSource(type, datasets, symbols, connections, onComplete)], activateOnTyping: true, activateOnTypingDelay: 120 }), hoverFor(datasets, symbols, connections, onInspect),
-        linter(() => []),
         keymap.of([
           { key: 'Ctrl-Space', run: startCompletion },
           { key: 'Alt-/', run: startCompletion },
