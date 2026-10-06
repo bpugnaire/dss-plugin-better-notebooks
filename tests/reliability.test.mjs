@@ -195,7 +195,60 @@ test('failed PATCH preserves a pre-existing native kernel and never opens its so
   h.registry.request=async(path,options={})=>{calls.push(options.method||'GET');if(options.method==='PATCH')throw new Error('permission denied');return h.native;};
   await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/Could not switch.*permission denied/);assert(!calls.includes('DELETE'));assert.equal(h.native[0].kernel.name,'python3');assert.equal(h.sockets.length,0);
 });
-test('PATCH returning the old environment is rejected before any execution', async () => {
-  const h=harness(), n={};h.registry.request=async(path,options={})=>options.method==='PATCH'?h.native[0]:h.native;
-  await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/instead of requested kernel/);assert.equal(h.sockets.length,0);assert.equal(h.sent.filter(m=>m.header.msg_type==='execute_request').length,0);
+test('ignored kernel-name PATCH creates litellm separately and attaches it by id', async () => {
+  const h=harness(), n={}, calls=[];
+  const old={id:'session-old',path:'P/A.ipynb',kernel:{id:'old-kernel',name:'py-dku-venv-demo_python_env'}};
+  const selected={id:'litellm-kernel',name:'py-dku-venv-litellm'};
+  h.registry.request=async(path,options={})=>{
+    const body=options.body&&JSON.parse(options.body);calls.push({path,method:options.method||'GET',body});
+    if(path==='api/kernels'&&options.method==='POST') {assert.deepEqual(body,{name:selected.name});return selected;}
+    if(options.method==='PATCH') return body.kernel.id ? {...old,kernel:selected} : old;
+    return [old];
+  };
+  const s=await h.registry.replace(n,old.path,selected.name);
+  assert.equal(s.kernelId,selected.id);assert.equal(s.state,'idle');
+  assert(calls.some(c=>c.method==='PATCH'&&c.body.kernel.id===selected.id));
+  assert(!calls.some(c=>c.method==='DELETE'));assert(h.sockets[0].url.startsWith(`${selected.id}/`));
+});
+test('ignored same-environment restart also creates and attaches a fresh kernel', async () => {
+  const h=harness(), n={};
+  h.registry.request=async(path,options={})=>{
+    if(path==='api/kernels'&&options.method==='POST')return {id:'fresh',name:'python3'};
+    if(options.method==='PATCH')return JSON.parse(options.body).kernel.id?{...h.native[0],kernel:{id:'fresh',name:'python3'}}:h.native[0];
+    return h.native;
+  };
+  const s=await h.registry.replace(n,'P/A.ipynb','python3');assert.equal(s.kernelId,'fresh');
+});
+test('fallback rejects the wrong created environment and cleans only its new kernel', async () => {
+  const h=harness(), n={}, deleted=[];
+  h.registry.request=async(path,options={})=>{
+    if(options.method==='DELETE'){deleted.push(path);return {};}
+    if(path==='api/kernels'&&options.method==='POST')return {id:'wrong-new',name:'python3'};
+    if(options.method==='PATCH')return h.native[0];
+    return h.native;
+  };
+  await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/DSS created kernel.*instead of requested/);
+  assert.deepEqual(deleted,['api/kernels/wrong-new']);assert.equal(h.sockets.length,0);assert.equal(h.sent.length,0);
+});
+test('failed attachment cleans the replacement and preserves the old session', async () => {
+  const h=harness(), n={}, deleted=[];
+  h.registry.request=async(path,options={})=>{
+    if(options.method==='DELETE'){deleted.push(path);return {};}
+    if(path==='api/kernels'&&options.method==='POST')return {id:'new',name:'new-env'};
+    if(options.method==='PATCH') {if(JSON.parse(options.body).kernel.id)throw new Error('permission denied');return h.native[0];}
+    return h.native;
+  };
+  await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/permission denied/);
+  assert.deepEqual(deleted,['api/kernels/new']);assert.equal(h.sockets.length,0);assert.equal(h.sent.length,0);
+});
+test('fallback never deletes a pre-existing kernel returned by creation', async () => {
+  const h=harness(), n={}, deleted=[];
+  h.registry.request=async(path,options={})=>{
+    if(options.method==='DELETE'){deleted.push(path);return {};}
+    if(path==='api/kernels'&&options.method==='POST')return h.native[0].kernel;
+    if(options.method==='PATCH')return h.native[0];
+    return h.native;
+  };
+  await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/reused the old kernel/);
+  assert.deepEqual(deleted,[]);assert.equal(h.sockets.length,0);
 });

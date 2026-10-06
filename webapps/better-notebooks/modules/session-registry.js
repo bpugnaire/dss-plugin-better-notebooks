@@ -42,7 +42,13 @@ export class SessionRegistry {
           }
           if (s.invalid) throw uncertainError('Session was invalidated during the environment switch.');
           if (native.id !== sessionId || !native.kernel?.id) throw new Error('DSS returned an invalid session after switching its kernel.');
-          if (!s.replacedKernel && native.kernel.name === kernelName) throw new Error('DSS kept the old kernel after the explicit restart request.');
+          // Some embedded servers acknowledge kernel.name while leaving the
+          // old attachment in place. Create the requested kernel separately
+          // and attach by id, which takes precedence in the Jupyter API.
+          if (native.kernel.name !== kernelName || !s.replacedKernel) {
+            native = await this.attachNewKernel(s, native, kernelName);
+            s.replacedKernel = native.kernel.id !== previousKernelId;
+          }
         }
         if (native.kernel.name !== kernelName) throw new Error(`DSS returned kernel \"${native.kernel.name || 'unknown'}\" instead of requested kernel \"${kernelName}\".`);
         s.kernelId = native.kernel.id;
@@ -60,6 +66,36 @@ export class SessionRegistry {
       finally { s.connecting = null; }
     })();
     return s.connecting;
+  }
+  async attachNewKernel(s, native, kernelName) {
+    let kernel;
+    try {
+      kernel = await this.request('api/kernels', {
+        method: 'POST', body: JSON.stringify({ name: kernelName }),
+      });
+      if (!kernel.id) throw new Error('DSS started a kernel without an identifier.');
+      if (kernel.id === native.kernel.id) {
+        // Never clean up a pre-existing kernel returned instead of a new one.
+        kernel = null;
+        throw new Error('DSS reused the old kernel while creating its replacement.');
+      }
+      if (kernel.name !== kernelName) throw new Error(`DSS created kernel "${kernel.name || 'unknown'}" instead of requested kernel "${kernelName}".`);
+      if (s.invalid) throw uncertainError('Session was invalidated during kernel creation.');
+      const attached = await this.request(`api/sessions/${encodeURIComponent(native.id)}`, {
+        method: 'PATCH', body: JSON.stringify({ kernel: { id: kernel.id } }),
+      });
+      if (s.invalid) throw uncertainError('Session was invalidated during kernel attachment.');
+      if (attached.id !== native.id || attached.kernel?.id !== kernel.id || attached.kernel.name !== kernelName) {
+        throw new Error('DSS did not attach the newly created kernel to the notebook session.');
+      }
+      return attached;
+    } catch (error) {
+      if (kernel?.id) {
+        try { await this.request(`api/kernels/${encodeURIComponent(kernel.id)}`, { method: 'DELETE' }); }
+        catch (cleanupError) { error.message += ` Replacement-kernel cleanup also failed: ${cleanupError.message}`; }
+      }
+      throw new Error(`Could not attach a new "${kernelName}" kernel: ${error.message}`);
+    }
   }
   async replace(notebook, path, kernelName) {
     this.invalidate(notebook);

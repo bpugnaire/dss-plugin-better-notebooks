@@ -133,6 +133,11 @@ If DSS returns `demo_python_env` while `dss_env` was selected, the session and
 its attached kernel disagree with the selection. A normal session POST can
 reuse a session solely by its path. Explicit switching therefore uses the
 [Jupyter session PATCH API](https://github.com/jupyter-server/jupyter_server/blob/main/jupyter_server/services/sessions/handlers.py), which starts a kernel with the requested name and replaces the old attachment.
-The plugin validates the response before opening the WebSocket or sending code.
-PATCH failures remain visible and restore the previous notebook metadata;
+If a successful PATCH keeps the old kernel or the wrong environment, an explicit
+restart creates a kernel with `POST /api/kernels` and attaches it using a second
+session PATCH with `kernel.id`. Both the created kernel name and the returned
+session attachment are verified before opening the WebSocket or sending code.
+Failed creation or attachment cleans the new kernel. A failed initial PATCH
+does not trigger this fallback, so permission and transport failures remain
+visible. Failed environment changes restore the previous notebook metadata;
 they do not permit executing in a different environment silently.
