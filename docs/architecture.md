@@ -44,6 +44,13 @@ See [reliability delivery and acceptance recipe](reliability.md).
 
 ## Build and verification
 
+Python hover help reads signatures, docstrings, imports and selected inferred
+types from the current cell and preceding Python cells. It can show notebook
+definitions and common pandas/Dataiku help before execution, without starting
+a kernel. An already connected idle kernel can still supply richer runtime
+documentation. Unknown imported members show their import path; dynamic object
+details require execution.
+
 Editable source and local modules are bundled into the checked-in webapp
 `app.js` using `pnpm run build:webapp`. `pnpm test` runs local checks only and
 verifies that the shipped bundle matches the source. Browser tests are a

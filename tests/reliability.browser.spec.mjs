@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 const body = readFileSync(new URL('../webapps/better-notebooks/body.html',import.meta.url),'utf8');
-const html = `<!doctype html><html><head><link rel="stylesheet" href="/webapps/better-notebooks/style.css"></head><body>${body}<script src="/webapps/better-notebooks/app.js"></script></body></html>`;
+const html = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/webapps/better-notebooks/style.css"></head><body>${body}<script src="/webapps/better-notebooks/app.js"></script></body></html>`;
 function document(name) { return {nbformat:4,nbformat_minor:5,metadata:{kernelspec:{name:'python3',language:'python',display_name:'Python'},custom:'preserved'},cells:[{id:`cell-${name}`,cell_type:'code',source:[`print("${name}")`],execution_count:null,outputs:[],metadata:{}}]}; }
 async function setup(page, { recovery=false, legacy=false, storageError=false } = {}) {
   const documents = new Map(['A','B'].map(name=>[name,{notebook:document(name),revision:`${name}-0`}])); const writes=[];
@@ -57,6 +57,18 @@ async function setup(page, { recovery=false, legacy=false, storageError=false } 
 }
 const editor=page=>page.locator('#cells .cm-content').first();
 const select=async(page,name)=>{await page.locator(`#notebook-tree [data-notebook-id="${name}"]`).click();await expect(page.locator('#notebook-title')).toHaveText(name);};
+test('hover shows function documentation before execution without starting a kernel',async({page})=>{
+  const errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await setup(page);
+  await editor(page).fill('def greet(name):\n    """Say hello to the supplied name."""\n    return name\n\ngreet("Alex")');
+  const line=page.locator('#cells .cm-line').filter({hasText:'greet("Alex")'});
+  const bounds=await line.boundingBox();
+  await page.mouse.move(bounds.x+18,bounds.y+bounds.height/2);
+  await expect(page.locator('.cm-project-hover')).toContainText('greet(name)');
+  await expect(page.locator('.cm-project-hover')).toContainText('Say hello to the supplied name.');
+  expect(await page.evaluate(()=>window.fakeSockets.length)).toBe(0);
+  expect(errors).toEqual([]);
+});
 test('quickly editing A then B saves both native notebooks with no cross-over',async({page})=>{
   const errors=[];page.on('pageerror',e=>errors.push(e.message));const {documents,writes}=await setup(page);
   await editor(page).fill('a = 1');await select(page,'B');await editor(page).fill('b = 2');

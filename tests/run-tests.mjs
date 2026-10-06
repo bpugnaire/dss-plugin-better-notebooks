@@ -9,6 +9,7 @@ const checks = [
   [process.execPath, ['tests/markdown-sections.test.mjs']],
   [process.execPath, ['tests/markdown-renderer.test.mjs']],
   [process.execPath, ['--test', 'tests/reliability.test.mjs']],
+  [process.execPath, ['--test', 'tests/python-hover.test.mjs']],
   [process.env.BETTER_NOTEBOOKS_TEST_PYTHON || 'python3', ['tests/backend-reliability.test.py']],
 ];
 for (const [command,args] of checks) {

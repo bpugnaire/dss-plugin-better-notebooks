@@ -1234,6 +1234,7 @@ function renderCells() {
     if (!markdownSections.hidden.has(data.id)) {
       editorApi.mount({
         id: data.id, parent: editorHost, source: data.source, type: data.type, datasets: DATASETS, symbols: () => symbolsBefore(data.id), connections: projectContext.connections,
+        sourceContext: () => notebook.cells.slice(0, Math.max(0, notebook.cells.findIndex(cell => cell.id === data.id))).filter(cell => cell.type === 'python').map(cell => cell.source),
         onChange: source => updateCell(data.id, { source }), onRun: () => runCell(data.id, notebook), onRunAndAdvance: () => runAndAdvance(data.id), onInspect: ({ code, pos }) => inspectInDssKernel(notebook, code, pos), onComplete: ({ code, pos }) => completeInDssKernel(notebook, code, pos),
       });
       editorApi.setReviewEdits(data.id, [...cellChanges.filter(change => change.op === 'edit_cell').flatMap(change => change.edits), ...inCellReviewEdits]);
