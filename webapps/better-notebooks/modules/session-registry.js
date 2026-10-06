@@ -3,12 +3,13 @@ const sessionPath = item => String(item.path || item.notebook?.path || '').repla
 export const uncertainError = message => Object.assign(new Error(message), { code: 'RESULT_UNCONFIRMED' });
 /** Transport-independent session lifecycle. Never replays execution requests. */
 export class SessionRegistry {
-  constructor({ request, socketFactory, socketUrl, onState = () => {}, onDisconnect = () => {}, clock = globalThis, startupTimeout = 120000 }) {
-    Object.assign(this, { request, socketFactory, socketUrl, onState, onDisconnect, clock, startupTimeout }); this.sessions = new Map();
+  constructor({ request, socketFactory, socketUrl, onState = () => {}, onDisconnect = () => {}, onAutomaticRestart = () => {}, onReconnectError = () => {}, clock = globalThis, startupTimeout = 120000 }) {
+    Object.assign(this, { request, socketFactory, socketUrl, onState, onDisconnect, onAutomaticRestart, onReconnectError, clock, startupTimeout }); this.sessions = new Map();
   }
   setState(session, state) { session.state = state; this.onState(session.notebook, state); }
   async connect(notebook, path, kernelName, { replaceKernel = false } = {}) {
     let s = this.sessions.get(notebook);
+    if (s?.reconnecting) { await s.reconnecting; s = this.sessions.get(notebook); }
     if (s?.connecting) return s.connecting;
     if (s && !s.invalid) {
       if (s.socket?.readyState === 1) return s;
@@ -32,7 +33,8 @@ export class SessionRegistry {
         s.dssSessionId = native.id;
         // DSS requires notebook-specific launch context (DKU_EXTRA_ENV).
         // Launch through session creation, never kernel-name PATCH or a bare
-        // kernel POST. Only an explicit restart may stop an existing session.
+        // kernel POST. Stop existing sessions only for an explicit restart or
+        // automatic recovery of a confirmed dead kernel.
         if (replaceKernel && !s.createdNative) {
           const previousSessionId = native.id;
           const previousKernelId = native.kernel.id;
@@ -96,7 +98,8 @@ export class SessionRegistry {
       if (s.invalid || s.socket !== socket) return;
       this.setState(s, 'disconnected');
       this.rejectPending(s, uncertainError('Connection lost; the execution result is not confirmed.'));
-      this.onDisconnect(s.notebook); this.reconnect(s).catch(() => {});
+      this.onDisconnect(s.notebook);
+      if (!s.connecting) this.reconnect(s).catch(() => {});
     });
     await new Promise((resolve, reject) => {
       let done = false;
@@ -110,16 +113,39 @@ export class SessionRegistry {
   async reconnect(s, manual = false) {
     if (s.invalid || s.reconnecting) return s.reconnecting;
     s.reconnecting = (async () => {
+      let lastError;
       for (const delay of manual ? [0] : [1000, 2000, 4000, 8000]) {
         await new Promise(resolve => { s.reconnectTimer = this.clock.setTimeout(resolve, delay); s.wakeReconnect = resolve; });
         if (s.invalid) return;
         try {
           const sessions = await this.request('api/sessions');
-          if (!sessions.some(item => item.id === s.dssSessionId && item.kernel?.id === s.kernelId)) { this.setState(s, 'missing'); return; }
+          if (s.invalid) return;
+          const existing = sessions.find(item => item.id === s.dssSessionId && item.kernel?.id === s.kernelId);
+          const dead = existing && (s.kernelDead || existing.kernel.execution_state === 'dead');
+          if (!existing || dead) {
+            this.setState(s, 'missing');
+            this.invalidate(s.notebook);
+            try {
+              await this.connect(s.notebook, s.path, s.kernelName, { replaceKernel: Boolean(dead) });
+              this.onAutomaticRestart(s.notebook);
+            } catch (error) {
+              const current = this.sessions.get(s.notebook);
+              if (current && !current.invalid) this.onReconnectError(s.notebook, error);
+              throw error;
+            }
+            return;
+          }
           await this.open(s); await this.probe(s); return;
-        } catch { if (s.socket) { const socket = s.socket; s.socket = null; socket.close(); } }
+        } catch (error) {
+          if (s.invalid) return;
+          lastError = error;
+          if (s.socket) { const socket = s.socket; s.socket = null; socket.close(); }
+        }
       }
-      if (!s.invalid) this.setState(s, 'disconnected');
+      if (!s.invalid) {
+        this.setState(s, 'disconnected');
+        this.onReconnectError(s.notebook, lastError || uncertainError('Kernel reconnection failed.'));
+      }
     })().finally(() => { s.reconnecting = null; });
     return s.reconnecting;
   }
@@ -179,7 +205,12 @@ export class SessionRegistry {
     if (type === 'status') {
       if (content.execution_state === 'idle') this.setState(s, 'idle');
       else if (content.execution_state === 'busy') this.setState(s, 'busy');
-      else if (content.execution_state === 'dead') { this.setState(s, 'missing'); this.rejectPending(s, uncertainError('Kernel died.')); this.onDisconnect(s.notebook); }
+      else if (content.execution_state === 'dead') {
+        s.kernelDead = true;
+        this.setState(s, 'missing'); this.rejectPending(s, uncertainError('Kernel died.')); this.onDisconnect(s.notebook);
+        const socket = s.socket; s.socket = null; socket?.close();
+        if (!s.connecting) this.reconnect(s).catch(() => {});
+      }
     }
     if (type === 'update_display_data') {
       for (const r of s.displays.values()) if (reduceOutput(r, message)) r.onOutput?.(r.outputs);

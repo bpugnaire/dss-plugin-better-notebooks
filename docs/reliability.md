@@ -92,8 +92,15 @@ deadline, inspection 2.5 seconds, and completion 1.4 seconds.
 A lost connection rejects pending work as unconfirmed and cancels queued work.
 Reconnect attempts wait 1, 2, 4 and 8 seconds and reuse the same native session.
 No user code is replayed. A kernel-info request plus idle confirmation is
-required before another execution. If the session disappeared, only an explicit
-restart creates a replacement. Long busy kernels may not answer a probe;
+required before another execution. If the session disappeared or its kernel is
+confirmed dead, automatic recovery reconnects to a compatible replacement or
+creates a session using the same notebook path and selected environment. A
+dead session still attached to the notebook is stopped before replacement.
+Only one automatic recreation is attempted per detected loss; failure remains
+visible and manual reconnect is available. The interface reports automatic
+restart and loss of in-memory variables. Cells and queued requests are never
+replayed. Invalidation during rename, delete or explicit restart cancels recovery.
+Long busy kernels may not answer a probe;
 manual reconnect remains available once they finish. The unconfirmed cell
 retains its partial output and is not retroactively presented as successful.
 
@@ -131,7 +138,7 @@ notebooks and two non-admin users with the intended project permissions.
 | Conflict resolution | Exercise export, save under a new name, and confirmed DSS reload | Local work preserved/exported; original DSS document not overwritten |
 | Interrupted batch | Run a long first cell followed by a cell with a visible side effect; click Stop | First cell interrupted; subsequent side effect absent |
 | Network loss | Disconnect the client while a cell has a visible side effect, then reconnect | Result unconfirmed; code not automatically run twice |
-| Session removal | Stop the native session from DSS while the plugin is open | Restart required; no replacement created by reconnect |
+| Session removal | Stop the native session from DSS while the plugin is open | Automatic recreation in the same environment; variables reset notice; no cells replayed |
 | Display updates | Use IPython display with `display_id`, `update_display`, and `clear_output(wait=True)` | Existing output updated/cleared; no duplicate display |
 | Recovery | Make an unsaved edit, reload, restore the draft; repeat and choose DSS | No automatic overwrite before a choice; both decisions work |
 | Runtime switch | Select another valid code env; inspect `sys.executable`; simulate startup failure | Correct environment; failed switch restores old metadata or explicitly reports rollback failure |

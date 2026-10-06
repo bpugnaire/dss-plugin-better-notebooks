@@ -86,8 +86,36 @@ test('disconnect rejects pending execution and reconnects without sending the co
   const h=harness(), n={}, s=await h.registry.connect(n,'P/A.ipynb','python3'); const result=h.registry.execute(s,'side_effect()'); const check=assert.rejects(result,e=>e.code==='RESULT_UNCONFIRMED');
   h.sockets[0].close(); await check; await h.clock.tick(1000); assert.equal(h.sockets.length,2); assert.equal(s.state,'idle'); assert.equal(h.sent.filter(m=>m.header.msg_type==='execute_request').length,1); h.registry.invalidate(n);
 });
-test('missing native session requires restart and never creates one on reconnect', async () => {
-  const h=harness(), n={}, s=await h.registry.connect(n,'P/A.ipynb','python3'); h.native.splice(0); h.sockets[0].close(); await h.clock.tick(1000); assert.equal(s.state,'missing'); assert.equal(h.creates,0); await assert.rejects(h.registry.execute(s,'x')); h.registry.invalidate(n);
+test('stopped native session is automatically recreated without replaying execution', async () => {
+  const h=harness(), n={}, s=await h.registry.connect(n,'P/A.ipynb','python3');let restarts=0;
+  const running=h.registry.execute(s,'side_effect()');const rejected=assert.rejects(running,e=>e.code==='RESULT_UNCONFIRMED');
+  h.native.splice(0);h.registry.onAutomaticRestart=()=>restarts++;
+  h.registry.request=async(path,options={})=>{if(options.method==='POST'){const fresh={id:'new-session',path:'P/A.ipynb',kernel:{id:'new-kernel',name:JSON.parse(options.body).kernel.name}};h.native.push(fresh);return fresh;}return h.native;};
+  h.sockets[0].close();await rejected;await h.clock.tick(1000);
+  const recovered=h.registry.sessions.get(n);assert.notEqual(recovered,s);assert.equal(recovered.state,'idle');assert.equal(recovered.kernelId,'new-kernel');assert.equal(restarts,1);
+  assert.equal(h.sent.filter(m=>m.header.msg_type==='execute_request').length,1);h.registry.invalidate(n);
+});
+test('dead status restarts an attached dead kernel even without a socket-close event', async () => {
+  const h=harness(), n={}, s=await h.registry.connect(n,'P/A.ipynb','python3');const calls=[];let restarts=0;
+  h.registry.onAutomaticRestart=()=>restarts++;
+  h.registry.request=async(path,options={})=>{
+    calls.push(options.method||'GET');if(options.method==='DELETE'){h.native.splice(0);return {};}
+    if(options.method==='POST'){const fresh={id:'new-session',path:'P/A.ipynb',kernel:{id:'fresh',name:'python3'}};h.native.push(fresh);return fresh;}return h.native;
+  };
+  h.registry.message(s,{header:{msg_type:'status'},content:{execution_state:'dead'}});await h.clock.tick(1000);
+  assert.equal(h.registry.sessions.get(n).kernelId,'fresh');assert.equal(restarts,1);assert(calls.includes('DELETE'));assert.equal(h.sent.filter(m=>m.header.msg_type==='execute_request').length,0);h.registry.invalidate(n);
+});
+test('failed automatic recreation reports an error and does not repeatedly create kernels', async () => {
+  const h=harness(), n={}, s=await h.registry.connect(n,'P/A.ipynb','python3');let creates=0;const errors=[];
+  h.native.splice(0);h.registry.onReconnectError=(notebook,error)=>errors.push(error.message);
+  h.registry.request=async(path,options={})=>{if(options.method==='POST'){creates++;throw new Error('permission denied');}return [];};
+  h.sockets[0].close();await h.clock.tick(1000);await h.clock.tick(30000);
+  assert.equal(creates,1);assert.equal(errors.length,1);assert.match(errors[0],/permission denied/);assert.equal(h.registry.sessions.get(n).state,'disconnected');h.registry.invalidate(n);
+});
+test('invalidation during session discovery prevents automatic recreation', async () => {
+  const h=harness(), n={}, s=await h.registry.connect(n,'P/A.ipynb','python3');const gate=deferred();let creates=0;
+  h.registry.request=async(path,options={})=>{if(options.method==='POST'){creates++;throw new Error('unexpected creation');}return gate.promise;};
+  h.sockets[0].close();await h.clock.tick(1000);h.registry.invalidate(n);gate.resolve([]);await turn();assert.equal(creates,0);assert(!h.registry.sessions.has(n));
 });
 test('interrupt rejects running requests and confirms idle via probe', async () => {
   const h=harness(), n={}, s=await h.registry.connect(n,'P/A.ipynb','python3'); const result=h.registry.execute(s,'x'); const check=assert.rejects(result,e=>e.code==='INTERRUPTED'); await h.registry.interrupt(n); await check; assert.equal(s.state,'idle');

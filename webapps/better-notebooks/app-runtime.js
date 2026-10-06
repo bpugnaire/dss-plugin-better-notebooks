@@ -283,15 +283,24 @@ const sessions = new SessionRegistry({
   socketUrl: jupyterSocketUrl,
   onState: (notebook, status) => {
     notebook.kernelState = status;
+    if (status === 'idle') { notebook.kernelError = ''; notebook.kernelErrorTitle = ''; }
     if (notebook === activeNotebook()) renderKernelStatus();
   },
   onDisconnect: notebook => executionQueue.cancel(notebook, Object.assign(new Error('Connection lost; result not confirmed.'), { code: 'RESULT_UNCONFIRMED' })),
+  onAutomaticRestart: notebook => {
+    notebook.kernelRestartedAutomatically = true;
+    if (notebook === activeNotebook()) renderKernelStatus();
+  },
+  onReconnectError: (notebook, error) => {
+    notebook.kernelErrorTitle = 'Automatic reconnect failed'; notebook.kernelError = error.message;
+    if (notebook === activeNotebook()) renderKernelStatus();
+  },
 });
 function renderKernelStatus() {
   const notebook = activeNotebook(); const status = notebook?.kernelState || 'idle';
-  const labels = { idle: 'Connected', starting: 'Starting…', busy: 'Running…', unknown: 'Result not confirmed', disconnected: 'Disconnected', missing: 'Session missing — restart required', interrupting: 'Interrupting…', error: notebook?.kernelErrorTitle || 'Kernel error' };
+  const labels = { idle: notebook?.kernelRestartedAutomatically ? 'Connected — kernel restarted' : 'Connected', starting: 'Starting…', busy: 'Running…', unknown: 'Result not confirmed', disconnected: 'Disconnected', missing: 'Kernel stopped — reconnecting…', interrupting: 'Interrupting…', error: notebook?.kernelErrorTitle || 'Kernel error' };
   setKernelStatus(notebook?.kernelState ? labels[status] || status : 'Not connected', status);
-  document.querySelector('#kernel-status').title = notebook?.kernelError || (notebook?.kernelState ? labels[status] || status : 'Run a cell to connect and confirm the notebook kernel.');
+  document.querySelector('#kernel-status').title = notebook?.kernelError || (notebook?.kernelRestartedAutomatically ? 'The kernel restarted automatically. In-memory variables were reset; cells were not rerun.' : notebook?.kernelState ? labels[status] || status : 'Run a cell to connect and confirm the notebook kernel.');
   const error = document.querySelector('#kernel-error');
   error.textContent = notebook?.kernelError || ''; error.classList.toggle('hidden', !notebook?.kernelError);
   document.querySelector('#reconnect-kernel')?.classList.toggle('hidden', !['unknown', 'disconnected'].includes(status));
@@ -1548,7 +1557,7 @@ async function restartKernel() {
   const notebook = activeNotebook(); if (!notebook) return;
   if (notebook.transitioning || executionQueue.busy(notebook) || notebookExecution(notebook).runningAll) { setSavedState('Interrupt execution before restarting.', true); return; }
   if (notebook.recoveryPending || notebook.conflict || saves.entry(notebook).error) { setSavedState('Resolve the save first.', true); return; }
-  notebook.kernelError = ''; notebook.kernelErrorTitle = '';
+  notebook.kernelError = ''; notebook.kernelErrorTitle = ''; notebook.kernelRestartedAutomatically = false;
   setNotebookTransition(notebook, true);
   try {
     await flushDssSave(notebook);
@@ -1558,6 +1567,7 @@ async function restartKernel() {
   finally { setNotebookTransition(notebook, false); }
 }
 async function restartKernelWithRuntime(notebook) {
+  notebook.kernelRestartedAutomatically = false;
   await flushDssSave(notebook);
   if (!projectContext.key) await loadProjectContext();
   return sessions.replace(notebook, `${projectContext.key}/${notebook.name}.ipynb`, notebookKernelName(notebook));

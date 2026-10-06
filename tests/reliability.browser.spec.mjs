@@ -69,6 +69,26 @@ test('hover shows function documentation before execution without starting a ker
   expect(await page.evaluate(()=>window.fakeSockets.length)).toBe(0);
   expect(errors).toEqual([]);
 });
+test('a stopped kernel reconnects automatically without replaying the running cell',async({page})=>{
+  await setup(page);let native=null;let created=0;
+  await page.route('**/jupyter/api/sessions*',route=>{
+    if(route.request().method()==='POST') {
+      created+=1;const payload=route.request().postDataJSON();
+      native={id:`session-${created}`,path:payload.path,kernel:{id:`kernel-${created}`,name:payload.kernel.name}};
+      return route.fulfill({json:native});
+    }
+    return route.fulfill({json:native?[native]:[]});
+  });
+  await page.locator('.run-cell').first().click();
+  await expect.poll(()=>page.evaluate(()=>window.fakeSockets.some(socket=>socket.current))).toBeTruthy();
+  native=null;
+  await page.evaluate(()=>window.fakeSockets.find(socket=>socket.current).close());
+  await expect(page.locator('#kernel-status')).toHaveText('● Connected — kernel restarted',{timeout:10000});
+  await expect(page.locator('#kernel-status')).toHaveAttribute('title',/variables were reset/);
+  await expect(page.locator('#cells .cell').first()).toHaveAttribute('data-execution-status','uncertain');
+  expect(created).toBe(2);
+  expect(await page.evaluate(()=>window.kernelRequests.filter(({message})=>message.header.msg_type==='execute_request'&&!message.content.silent).length)).toBe(1);
+});
 test('quickly editing A then B saves both native notebooks with no cross-over',async({page})=>{
   const errors=[];page.on('pageerror',e=>errors.push(e.message));const {documents,writes}=await setup(page);
   await editor(page).fill('a = 1');await select(page,'B');await editor(page).fill('b = 2');
