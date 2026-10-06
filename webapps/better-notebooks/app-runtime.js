@@ -7,6 +7,7 @@ import { serializeNotebook } from './modules/notebook-document.js';
 import { SaveCoordinator } from './modules/save-coordinator.js';
 import { ExecutionQueue } from './modules/execution-queue.js';
 import { SessionRegistry } from './modules/session-registry.js';
+import { jupyterRequestError } from './modules/jupyter-errors.js';
 import { safeStorage, scopedDraftKey } from './modules/browser-storage.js';
 import { captureScrollPositions as captureRenderScroll, restoreScrollPositions as restoreRenderScroll } from './modules/rendering.js';
 import { datasetVariableName as datasetVariable, linkedDatasets as findLinkedDatasets } from './modules/dataset-integration.js';
@@ -259,7 +260,7 @@ async function jupyterRequest(path, options = {}) {
   const xsrfArgument = token ? `${separator}_xsrf=${encodeURIComponent(token)}` : '';
   const response = await fetch(`/jupyter/${path.replace(/^\//, '')}${xsrfArgument}`, { credentials: 'same-origin', headers, ...options });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.message || payload.reason || `Jupyter request failed (${response.status})`);
+  if (!response.ok) throw jupyterRequestError(payload, response.status, method, path);
   return payload;
 }
 function notebookKernelName(notebook) {

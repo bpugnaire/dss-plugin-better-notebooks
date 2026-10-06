@@ -33,8 +33,8 @@ draft if it acknowledges every local edit. Conflicts suspend further automatic
 writes. Disconnections preserve partial output and never replay code.
 
 Native rename is a copy/delete operation; deleting the source stops its native
-sessions. Runtime changes explicitly PATCH the session’s attached kernel with the new
-kernelspec; restarting the old kernel would retain its environment. These operations wait for saves and refuse
+sessions. Runtime changes stop the existing session and create a fresh notebook session
+with the requested kernelspec, keeping launch context on the DSS session path. These operations wait for saves and refuse
 unresolved execution or recovery states.
 
 The backend cannot provide atomic compare-and-swap across native DSS editors

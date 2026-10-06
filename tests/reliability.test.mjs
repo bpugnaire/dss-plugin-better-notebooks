@@ -5,8 +5,16 @@ import { ExecutionQueue } from '../webapps/better-notebooks/modules/execution-qu
 import { SessionRegistry } from '../webapps/better-notebooks/modules/session-registry.js';
 import { reduceOutput } from '../webapps/better-notebooks/modules/kernel-protocol.js';
 import { safeStorage, scopedDraftKey } from '../webapps/better-notebooks/modules/browser-storage.js';
+import { jupyterRequestError } from '../webapps/better-notebooks/modules/jupyter-errors.js';
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; }); return {promise,resolve,reject}; };
 const turn = async () => { for (let i=0;i<15;i++) await Promise.resolve(); };
+test('DSS launch exception is visible with HTTP context and without trace paths or tokens', () => {
+  const error=jupyterRequestError({message:'Unhandled error',reason:null,traceback:'Traceback (most recent call last):\n  File "/internal/server/provisioner.py"\nKeyError: \'DKU_EXTRA_ENV\'\n'},500,'PATCH','api/sessions/session-a?_xsrf=secret');
+  assert.match(error.message,/Unhandled error: KeyError: 'DKU_EXTRA_ENV'/);
+  assert.match(error.message,/HTTP 500, PATCH \/jupyter\/api\/sessions\/session-a/);
+  assert(!error.message.includes('secret'));assert(!error.message.includes('/internal/'));assert.equal(error.status,500);
+  assert.match(jupyterRequestError({},403,'DELETE','api/sessions/a').message,/Jupyter request failed.*HTTP 403/);
+});
 class Clock {
   now = 0; tasks = new Map(); next = 0;
   setTimeout = (fn, delay) => { const id=++this.next; this.tasks.set(id,{fn,at:this.now+delay}); return id; };
@@ -150,24 +158,31 @@ test('cold kernel startup stays starting and can take longer than five seconds',
 test('startup failure reports the requested kernelspec and readiness deadline', async () => {
   const h=harness({infoDelay:25000}), n={};const pending=h.registry.connect(n,'P/A.ipynb','python3');const check=assert.rejects(pending,e=>/python3/.test(e.message)&&/20 seconds/.test(e.message));await turn();await h.clock.tick(20000);await check;assert.equal(h.registry.sessions.get(n).state,'disconnected');
 });
-test('runtime switch explicitly patches a pre-existing native session after a frontend reload', async () => {
+test('explicit restart recreates the notebook session with its requested environment', async () => {
   const h=harness(), n={}, calls=[];
+  const old={id:'session-old',path:'P/A.ipynb',kernel:{id:'old',name:'py-dku-venv-demo_python_env'}};
+  let native=[old];
   h.registry.request=async(path,options={})=>{
     calls.push([path,options.method||'GET']);
-    if(options.method==='PATCH') {
-      const kernelName=JSON.parse(options.body).kernel.name;
-      const native={id:'session-a',path:'P/A.ipynb',kernel:{id:'new-kernel',name:kernelName}};
-      h.native.splice(0,1,native);return native;
+    if(options.method==='PATCH'||path==='api/kernels')throw new Error("KeyError: 'DKU_EXTRA_ENV'");
+    if(options.method==='DELETE'){native=[];return {};}
+    if(options.method==='POST'){
+      const body=JSON.parse(options.body);assert.equal(path,'api/sessions');assert.equal(body.path,old.path);assert.equal(body.kernel.name,'py-dku-venv-litellm');
+      const created={id:'new-session',path:old.path,kernel:{id:'litellm-kernel',name:body.kernel.name}};native=[created];return created;
     }
-    return h.native;
+    return native;
   };
-  const s=await h.registry.replace(n,'P/A.ipynb','new-env');assert.equal(s.kernelName,'new-env');assert.equal(s.kernelId,'new-kernel');
-  assert(calls.some(([path,method])=>path==='api/sessions/session-a'&&method==='PATCH'));assert(!calls.some(([,method])=>method==='DELETE'||method==='POST'));assert.equal(h.native.length,1);
+  const s=await h.registry.replace(n,old.path,'py-dku-venv-litellm');
+  assert.equal(s.kernelId,'litellm-kernel');assert.equal(s.state,'idle');
+  assert.deepEqual(calls.map(c=>c[1]),['GET','DELETE','GET','POST']);
+  assert(h.sockets[0].url.startsWith('litellm-kernel/'));
 });
-test('wrong returned kernelspec never counts as a successful environment switch', async () => {
-  const h=harness({existing:false});await assert.rejects(h.registry.connect({},'P/A.ipynb','different-env'),/instead of requested kernel/);assert.equal(h.sockets.length,0);
+test('ordinary connect never shuts down an existing session in the wrong environment', async () => {
+  const h=harness(), calls=[];
+  const request=h.registry.request;h.registry.request=async(path,options={})=>{calls.push(options.method||'GET');return request(path,options);};
+  await assert.rejects(h.registry.connect({},'P/A.ipynb','different-env'),/instead of requested kernel/);
+  assert.deepEqual(calls,['GET','POST']);assert.equal(h.sockets.length,0);
 });
-
 test('failed environment startup cleans its newly created native session', async () => {
   const h=harness({infoDelay:25000}), n={}, deleted=[];h.native.splice(0);
   h.registry.request=async(path,options={})=>{
@@ -175,80 +190,63 @@ test('failed environment startup cleans its newly created native session', async
     if(options.method==='POST'){const native={id:'failed-new',path:'P/A.ipynb',kernel:{id:'new-kernel',name:'new-env'}};h.native.push(native);return native;}
     return h.native;
   };
-  const pending=h.registry.replace(n,'P/A.ipynb','new-env');const rejected=assert.rejects(pending,/readiness timed out/);await turn();await h.clock.tick(20000);await rejected;assert(deleted.includes('api/sessions/failed-new'));assert(!h.registry.sessions.has(n));assert.equal(h.native.length,0);
+  const pending=h.registry.replace(n,'P/A.ipynb','new-env');const rejected=assert.rejects(pending,/readiness timed out/);await turn();await h.clock.tick(20000);await rejected;
+  assert.deepEqual(deleted,['api/sessions/failed-new']);assert(!h.registry.sessions.has(n));assert.equal(h.native.length,0);
 });
-
-test('DSS returning demo_python_env on POST is corrected by PATCH to dss_env', async () => {
+test('POST reusing an unrecognized old session is handled by explicit restart', async () => {
   const h=harness(), n={}, calls=[];
-  // Discovery did not recognize the path, but Jupyter POST reuses its session.
-  const old={id:'session-old',path:'different-path',kernel:{id:'old-kernel',name:'py-dku-venv-demo_python_env'}};
+  const old={id:'old-session',path:'unrecognized-path',kernel:{id:'old-kernel',name:'python3'}};let deleted=false;
   h.registry.request=async(path,options={})=>{
-    calls.push([path,options.method||'GET']);
-    if(options.method==='POST')return old;
-    if(options.method==='PATCH') {assert.deepEqual(JSON.parse(options.body),{kernel:{name:'py-dku-venv-dss_env'}});return {...old,kernel:{id:'selected-kernel',name:'py-dku-venv-dss_env'}};}
-    return [old];
+    calls.push(options.method||'GET');
+    if(options.method==='DELETE'){deleted=true;return {};}
+    if(options.method==='POST')return deleted?{id:'new-session',path:'P/A.ipynb',kernel:{id:'new-kernel',name:'new-env'}}:old;
+    return deleted?[]:[old];
   };
-  const s=await h.registry.replace(n,'P/A.ipynb','py-dku-venv-dss_env');assert.equal(s.kernelId,'selected-kernel');assert.equal(s.state,'idle');assert(calls.some(([path,method])=>path==='api/sessions/session-old'&&method==='PATCH'));assert(h.sockets[0].url.startsWith('selected-kernel/'));
+  const s=await h.registry.replace(n,'P/A.ipynb','new-env');assert.equal(s.kernelId,'new-kernel');
+  assert.deepEqual(calls,['GET','POST','DELETE','GET','POST']);
 });
-test('failed PATCH preserves a pre-existing native kernel and never opens its socket', async () => {
+test('permission denied on shutdown preserves the old kernel and never launches another', async () => {
   const h=harness(), n={}, calls=[];
-  h.registry.request=async(path,options={})=>{calls.push(options.method||'GET');if(options.method==='PATCH')throw new Error('permission denied');return h.native;};
-  await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/Could not switch.*permission denied/);assert(!calls.includes('DELETE'));assert.equal(h.native[0].kernel.name,'python3');assert.equal(h.sockets.length,0);
-});
-test('ignored kernel-name PATCH creates litellm separately and attaches it by id', async () => {
-  const h=harness(), n={}, calls=[];
-  const old={id:'session-old',path:'P/A.ipynb',kernel:{id:'old-kernel',name:'py-dku-venv-demo_python_env'}};
-  const selected={id:'litellm-kernel',name:'py-dku-venv-litellm'};
-  h.registry.request=async(path,options={})=>{
-    const body=options.body&&JSON.parse(options.body);calls.push({path,method:options.method||'GET',body});
-    if(path==='api/kernels'&&options.method==='POST') {assert.deepEqual(body,{name:selected.name});return selected;}
-    if(options.method==='PATCH') return body.kernel.id ? {...old,kernel:selected} : old;
-    return [old];
-  };
-  const s=await h.registry.replace(n,old.path,selected.name);
-  assert.equal(s.kernelId,selected.id);assert.equal(s.state,'idle');
-  assert(calls.some(c=>c.method==='PATCH'&&c.body.kernel.id===selected.id));
-  assert(!calls.some(c=>c.method==='DELETE'));assert(h.sockets[0].url.startsWith(`${selected.id}/`));
-});
-test('ignored same-environment restart also creates and attaches a fresh kernel', async () => {
-  const h=harness(), n={};
-  h.registry.request=async(path,options={})=>{
-    if(path==='api/kernels'&&options.method==='POST')return {id:'fresh',name:'python3'};
-    if(options.method==='PATCH')return JSON.parse(options.body).kernel.id?{...h.native[0],kernel:{id:'fresh',name:'python3'}}:h.native[0];
-    return h.native;
-  };
-  const s=await h.registry.replace(n,'P/A.ipynb','python3');assert.equal(s.kernelId,'fresh');
-});
-test('fallback rejects the wrong created environment and cleans only its new kernel', async () => {
-  const h=harness(), n={}, deleted=[];
-  h.registry.request=async(path,options={})=>{
-    if(options.method==='DELETE'){deleted.push(path);return {};}
-    if(path==='api/kernels'&&options.method==='POST')return {id:'wrong-new',name:'python3'};
-    if(options.method==='PATCH')return h.native[0];
-    return h.native;
-  };
-  await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/DSS created kernel.*instead of requested/);
-  assert.deepEqual(deleted,['api/kernels/wrong-new']);assert.equal(h.sockets.length,0);assert.equal(h.sent.length,0);
-});
-test('failed attachment cleans the replacement and preserves the old session', async () => {
-  const h=harness(), n={}, deleted=[];
-  h.registry.request=async(path,options={})=>{
-    if(options.method==='DELETE'){deleted.push(path);return {};}
-    if(path==='api/kernels'&&options.method==='POST')return {id:'new',name:'new-env'};
-    if(options.method==='PATCH') {if(JSON.parse(options.body).kernel.id)throw new Error('permission denied');return h.native[0];}
-    return h.native;
-  };
+  h.registry.request=async(path,options={})=>{calls.push(options.method||'GET');if(options.method==='DELETE')throw Object.assign(new Error('permission denied'),{status:403});return h.native;};
   await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/permission denied/);
-  assert.deepEqual(deleted,['api/kernels/new']);assert.equal(h.sockets.length,0);assert.equal(h.sent.length,0);
+  assert.deepEqual(calls,['GET','DELETE']);assert.equal(h.sockets.length,0);assert.equal(h.native[0].kernel.name,'python3');
 });
-test('fallback never deletes a pre-existing kernel returned by creation', async () => {
-  const h=harness(), n={}, deleted=[];
+test('shutdown acknowledgement without removal cannot count as restart', async () => {
+  const h=harness(), n={}, calls=[];
+  h.registry.request=async(path,options={})=>{calls.push(options.method||'GET');return options.method==='DELETE'?{}:h.native;};
+  await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/kept the old notebook session/);
+  assert.deepEqual(calls,['GET','DELETE','GET']);assert.equal(h.sockets.length,0);
+});
+test('fresh session creation does not need shutdown', async () => {
+  const h=harness(), calls=[];
+  h.registry.request=async(path,options={})=>{calls.push(options.method||'GET');return options.method==='POST'?{id:'fresh',path:'P/A.ipynb',kernel:{id:'fresh-kernel',name:'python3'}}:[];};
+  const s=await h.registry.replace({},'P/A.ipynb','python3');assert.equal(s.kernelId,'fresh-kernel');assert.deepEqual(calls,['GET','POST']);
+});
+test('new wrong-environment session is cleaned without opening a socket', async () => {
+  const h=harness(), deleted=[];
   h.registry.request=async(path,options={})=>{
     if(options.method==='DELETE'){deleted.push(path);return {};}
-    if(path==='api/kernels'&&options.method==='POST')return h.native[0].kernel;
-    if(options.method==='PATCH')return h.native[0];
-    return h.native;
+    if(options.method==='POST')return {id:'wrong-new',kernel:{id:'wrong-kernel',name:'python3'}};
+    return [];
   };
-  await assert.rejects(h.registry.replace(n,'P/A.ipynb','new-env'),/reused the old kernel/);
-  assert.deepEqual(deleted,[]);assert.equal(h.sockets.length,0);
+  await assert.rejects(h.registry.replace({},'P/A.ipynb','new-env'),/instead of requested kernel/);
+  assert.deepEqual(deleted,['api/sessions/wrong-new']);assert.equal(h.sockets.length,0);assert.equal(h.sent.length,0);
+});
+test('restart in the same environment still shuts down and starts a fresh kernel', async () => {
+  const h=harness(), calls=[];let stopped=false;
+  h.registry.request=async(path,options={})=>{
+    calls.push(options.method||'GET');if(options.method==='DELETE'){stopped=true;return {};}
+    if(options.method==='POST')return {id:'fresh',path:'P/A.ipynb',kernel:{id:'fresh-kernel',name:'python3'}};
+    return stopped?[]:h.native;
+  };
+  const s=await h.registry.replace({},'P/A.ipynb','python3');assert.equal(s.kernelId,'fresh-kernel');assert.deepEqual(calls,['GET','DELETE','GET','POST']);
+});
+test('failed session recreation reports failure without retrying or replaying code', async () => {
+  const h=harness(), calls=[];let stopped=false;
+  h.registry.request=async(path,options={})=>{
+    calls.push(options.method||'GET');if(options.method==='DELETE'){stopped=true;return {};}
+    if(options.method==='POST')throw new Error("KeyError: 'DKU_EXTRA_ENV'");return stopped?[]:h.native;
+  };
+  await assert.rejects(h.registry.replace({},'P/A.ipynb','new-env'),/DKU_EXTRA_ENV/);
+  assert.deepEqual(calls,['GET','DELETE','GET','POST']);assert.equal(h.sockets.length,0);assert.equal(h.sent.length,0);
 });

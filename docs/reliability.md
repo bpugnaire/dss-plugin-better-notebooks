@@ -93,7 +93,16 @@ retains its partial output and is not retroactively presented as successful.
 
 Stop interrupts the current notebook's kernel immediately and cancels its
 queue. It does not affect another notebook. Restart, rename, delete and runtime
-changes coordinate with pending saves and invalidate old callbacks. An explicit runtime change or restart uses `PATCH /api/sessions/{id}` with `kernel.name` for a pre-existing session, then verifies the returned kernelspec. A freshly created session is already started with the requested kernelspec. This avoids `POST` silently reusing the old kernel, including when session discovery did not recognize its path. If PATCH fails, an unchanged pre-existing native session is preserved. An inline error includes the failure reason. Reloading shows “Not connected” until a session is confirmed. A failed runtime change restores the old metadata; a failed restoration is reported
+changes coordinate with pending saves and invalidate old callbacks. An explicit
+runtime change or restart stops the existing notebook session with
+`DELETE /api/sessions/{id}`, confirms its removal, then creates a session with
+`POST /api/sessions` and the requested kernelspec. A fresh session is created
+without shutdown. This avoids POST reusing an old kernel and keeps startup on
+DSS's notebook-session launch path. A failed shutdown preserves the old session;
+if creation fails after shutdown, the old in-memory state is already lost and a
+new explicit restart is required. Reloading shows “Not connected” until a
+session is confirmed. A failed runtime change restores the old metadata; a
+failed restoration is reported
 separately. Permission or transport failures never silently count as success.
 
 Outputs support immediate and deferred `clear_output`, and `display_id` updates
@@ -131,13 +140,19 @@ rather than claiming atomic protection.
 
 If DSS returns `demo_python_env` while `dss_env` was selected, the session and
 its attached kernel disagree with the selection. A normal session POST can
-reuse a session solely by its path. Explicit switching therefore uses the
-[Jupyter session PATCH API](https://github.com/jupyter-server/jupyter_server/blob/main/jupyter_server/services/sessions/handlers.py), which starts a kernel with the requested name and replaces the old attachment.
-If a successful PATCH keeps the old kernel or the wrong environment, an explicit
-restart creates a kernel with `POST /api/kernels` and attaches it using a second
-session PATCH with `kernel.id`. Both the created kernel name and the returned
-session attachment are verified before opening the WebSocket or sending code.
-Failed creation or attachment cleans the new kernel. A failed initial PATCH
-does not trigger this fallback, so permission and transport failures remain
-visible. Failed environment changes restore the previous notebook metadata;
-they do not permit executing in a different environment silently.
+reuse a session solely by its path. Explicit switching stops the existing
+session, confirms removal, and starts a fresh notebook session. The returned
+kernelspec is verified before opening a WebSocket or sending code. Failure
+cleanup deletes only a newly created session, never a surviving session.
+
+A supplied DSS traceback shows `KeyError: 'DKU_EXTRA_ENV'` in
+`notebook/dataiku/kernelmanager.py` during a kernel-name session PATCH. The
+DSS launcher expects additional notebook launch context; generic kernel
+switching does not supply it on this deployment. The plugin therefore avoids
+both kernel-name PATCH and standalone `POST /api/kernels` during restart.
+Session recreation still needs verification on the target DSS deployment.
+
+Jupyter errors include the final server exception, HTTP status, method and path
+without query tokens or the full internal traceback. A failed environment
+change restores previous notebook metadata, but it cannot restore variables
+from a kernel that has already been stopped. No user code is replayed.
