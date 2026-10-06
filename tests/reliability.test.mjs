@@ -58,7 +58,7 @@ function harness({ existing = true, infoDelay = 0 } = {}) {
     constructor(url) { this.url=url; sockets.push(this); queueMicrotask(()=>{this.readyState=1;this.emit('open',{});}); }
     addEventListener(type,fn) { const list=this.listeners.get(type)||[]; list.push(fn); this.listeners.set(type,list); }
     emit(type,event) { for(const fn of this.listeners.get(type)||[])fn(event); }
-    send(raw) { const m=JSON.parse(raw); sent.push(m); if(m.header.msg_type==='kernel_info_request') { const reply=()=>{this.msg(m,'kernel_info_reply',{}); this.msg(m,'status',{execution_state:'idle'});}; if(infoDelay)clock.setTimeout(reply,infoDelay);else queueMicrotask(reply); } }
+    send(raw) { const m=JSON.parse(raw); sent.push(m); if(m.header.msg_type==='kernel_info_request') { const reply=()=>{this.msg(m,'kernel_info_reply',{}); this.msg(m,'status',{execution_state:'idle'});}; const remaining=Math.max(0,infoDelay-clock.now);if(remaining)clock.setTimeout(reply,remaining);else queueMicrotask(reply); } }
     msg(parent,type,content) { this.emit('message',{data:JSON.stringify({header:{msg_type:type},parent_header:{msg_id:parent.header.msg_id},content})}); }
     close() { this.readyState=3;this.emit('close',{}); }
   }
@@ -156,7 +156,23 @@ test('cold kernel startup stays starting and can take longer than five seconds',
   await h.clock.tick(10000);assert.equal(h.registry.sessions.get(n).state,'starting');await h.clock.tick(2000);const s=await pending;assert.equal(s.state,'idle');
 });
 test('startup failure reports the requested kernelspec and readiness deadline', async () => {
-  const h=harness({infoDelay:25000}), n={};const pending=h.registry.connect(n,'P/A.ipynb','python3');const check=assert.rejects(pending,e=>/python3/.test(e.message)&&/20 seconds/.test(e.message));await turn();await h.clock.tick(20000);await check;assert.equal(h.registry.sessions.get(n).state,'disconnected');
+  const h=harness({infoDelay:150000}), n={};const pending=h.registry.connect(n,'P/A.ipynb','python3');const check=assert.rejects(pending,e=>/python3/.test(e.message)&&/120 seconds/.test(e.message)&&/No kernel_info_reply/.test(e.message));await turn();await h.clock.tick(120000);await check;assert.equal(h.registry.sessions.get(n).state,'disconnected');
+});
+test('cold startup beyond twenty seconds retries probes without executing code', async () => {
+  const h=harness({infoDelay:45000}), n={};const pending=h.registry.connect(n,'P/A.ipynb','python3');await turn();
+  await h.clock.tick(30000);assert.equal(h.registry.sessions.get(n).state,'starting');
+  await h.clock.tick(15000);const s=await pending;assert.equal(s.state,'idle');
+  assert(h.sent.length>1);assert(h.sent.every(message=>message.header.msg_type==='kernel_info_request'));assert.equal(h.sockets.length,1);
+});
+test('readiness diagnoses a received reply without idle instead of allowing execution', async () => {
+  const h=harness(), n={};h.registry.startupTimeout=10000;
+  h.registry.open=async s=>{s.socket={readyState:1,close(){},send(raw){const m=JSON.parse(raw);queueMicrotask(()=>h.registry.message(s,{header:{msg_type:'kernel_info_reply'},parent_header:{msg_id:m.header.msg_id},content:{}}));}};};
+  const pending=h.registry.connect(n,'P/A.ipynb','python3');const rejected=assert.rejects(pending,/kernel_info_reply was received, but no matching idle/);
+  await turn();await h.clock.tick(10000);await rejected;assert.equal(h.registry.sessions.get(n).state,'disconnected');
+});
+test('invalidating startup immediately ends readiness polling', async () => {
+  const h=harness({infoDelay:45000}), n={};const pending=h.registry.connect(n,'P/A.ipynb','python3');const rejected=assert.rejects(pending,/Session invalidated/);await turn();
+  h.registry.invalidate(n);await rejected;const count=h.sent.length;await h.clock.tick(15000);assert.equal(h.sent.length,count);
 });
 test('explicit restart recreates the notebook session with its requested environment', async () => {
   const h=harness(), n={}, calls=[];
@@ -184,13 +200,13 @@ test('ordinary connect never shuts down an existing session in the wrong environ
   assert.deepEqual(calls,['GET','POST']);assert.equal(h.sockets.length,0);
 });
 test('failed environment startup cleans its newly created native session', async () => {
-  const h=harness({infoDelay:25000}), n={}, deleted=[];h.native.splice(0);
+  const h=harness({infoDelay:150000}), n={}, deleted=[];h.native.splice(0);
   h.registry.request=async(path,options={})=>{
     if(options.method==='DELETE'){deleted.push(path);h.native.splice(0);return {};}
     if(options.method==='POST'){const native={id:'failed-new',path:'P/A.ipynb',kernel:{id:'new-kernel',name:'new-env'}};h.native.push(native);return native;}
     return h.native;
   };
-  const pending=h.registry.replace(n,'P/A.ipynb','new-env');const rejected=assert.rejects(pending,/readiness timed out/);await turn();await h.clock.tick(20000);await rejected;
+  const pending=h.registry.replace(n,'P/A.ipynb','new-env');const rejected=assert.rejects(pending,/readiness timed out/);await turn();await h.clock.tick(120000);await rejected;
   assert.deepEqual(deleted,['api/sessions/failed-new']);assert(!h.registry.sessions.has(n));assert.equal(h.native.length,0);
 });
 test('POST reusing an unrecognized old session is handled by explicit restart', async () => {

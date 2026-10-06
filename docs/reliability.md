@@ -81,7 +81,13 @@ launch. Editing or changing tabs does not redirect results.
 Execution has no 90-second deadline. A confirmed finish requires both
 `execute_reply` and the matching IOPub `idle`, in either order. A reply without
 idle after ten seconds leaves the result unconfirmed and cancels queued work.
-Connection establishment and initial kernel readiness each have a 20-second deadline; later kernel-info probes have a five-second deadline, inspection 2.5 seconds, and completion 1.4 seconds.
+WebSocket connection establishment has a 20-second deadline. Initial kernel
+readiness has a two-minute budget, with a fresh kernel-info probe every five
+seconds until a matching reply and idle status arrive. These retries never
+execute user code. The final error distinguishes a missing reply from a reply
+without idle confirmation. Disconnection, invalidation or kernel death ends
+the wait without retrying user code. Later kernel-info probes have a five-second
+deadline, inspection 2.5 seconds, and completion 1.4 seconds.
 
 A lost connection rejects pending work as unconfirmed and cancels queued work.
 Reconnect attempts wait 1, 2, 4 and 8 seconds and reuse the same native session.

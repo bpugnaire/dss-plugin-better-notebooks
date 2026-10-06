@@ -3,8 +3,8 @@ const sessionPath = item => String(item.path || item.notebook?.path || '').repla
 export const uncertainError = message => Object.assign(new Error(message), { code: 'RESULT_UNCONFIRMED' });
 /** Transport-independent session lifecycle. Never replays execution requests. */
 export class SessionRegistry {
-  constructor({ request, socketFactory, socketUrl, onState = () => {}, onDisconnect = () => {}, clock = globalThis }) {
-    Object.assign(this, { request, socketFactory, socketUrl, onState, onDisconnect, clock }); this.sessions = new Map();
+  constructor({ request, socketFactory, socketUrl, onState = () => {}, onDisconnect = () => {}, clock = globalThis, startupTimeout = 120000 }) {
+    Object.assign(this, { request, socketFactory, socketUrl, onState, onDisconnect, clock, startupTimeout }); this.sessions = new Map();
   }
   setState(session, state) { session.state = state; this.onState(session.notebook, state); }
   async connect(notebook, path, kernelName, { replaceKernel = false } = {}) {
@@ -57,7 +57,7 @@ export class SessionRegistry {
         if (native.kernel.name !== kernelName) throw new Error(`DSS returned kernel \"${native.kernel.name || 'unknown'}\" instead of requested kernel \"${kernelName}\".`);
         s.kernelId = native.kernel.id;
         await this.open(s);
-        await this.probe(s, 20000, true);
+        await this.waitForReady(s);
         return s;
       } catch (error) {
         if (!s.invalid) {
@@ -123,6 +123,21 @@ export class SessionRegistry {
     })().finally(() => { s.reconnecting = null; });
     return s.reconnecting;
   }
+  async waitForReady(s) {
+    const now = () => typeof this.clock.now === 'number' ? this.clock.now : Date.now();
+    const deadline = now() + this.startupTimeout;
+    let lastError;
+    while (now() < deadline) {
+      try {
+        await this.probe(s, Math.min(5000, deadline - now()), true);
+        return;
+      } catch (error) {
+        if (!error.readinessTimedOut) throw error;
+        lastError = error;
+      }
+    }
+    throw uncertainError(`Kernel readiness timed out after ${this.startupTimeout / 1000} seconds. ${lastError?.readinessDetail || 'Readiness was not confirmed.'}`);
+  }
   probe(s, timeout = 5000, starting = false) {
     this.setState(s, starting ? 'starting' : 'unknown');
     return this.send(s, 'kernel_info_request', {}, 'info', timeout).then(() => {
@@ -135,7 +150,16 @@ export class SessionRegistry {
     const message = jupyterMessage(type, content, s.sessionId);
     return new Promise((resolve, reject) => {
       const r = { kind, resolve, reject, outputs: [], displays: new Map(), reply: false, idle: false };
-      if (timeout) r.timeout = this.clock.setTimeout(() => { s.pending.delete(message.header.msg_id); reject(uncertainError(`${kind === 'info' ? 'Kernel readiness' : 'Kernel response'} timed out after ${timeout / 1000} seconds.`)); }, timeout);
+      if (timeout) r.timeout = this.clock.setTimeout(() => {
+        s.pending.delete(message.header.msg_id);
+        const error = uncertainError(`${kind === 'info' ? 'Kernel readiness' : 'Kernel response'} timed out after ${timeout / 1000} seconds.`);
+        if (kind === 'info') {
+          error.readinessTimedOut = true;
+          error.readinessDetail = r.reply ? 'A kernel_info_reply was received, but no matching idle status arrived.' : 'No kernel_info_reply was received for the latest readiness probe.';
+          error.message += ` ${error.readinessDetail}`;
+        }
+        reject(error);
+      }, timeout);
       s.pending.set(message.header.msg_id, r);
       try { s.socket.send(JSON.stringify({ ...message, channel: 'shell' })); }
       catch (error) { this.clock.clearTimeout(r.timeout); s.pending.delete(message.header.msg_id); reject(uncertainError(error.message)); }
