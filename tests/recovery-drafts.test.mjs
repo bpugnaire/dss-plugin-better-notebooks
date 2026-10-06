@@ -4,6 +4,11 @@ import { pythonExport } from '../webapps/better-notebooks/modules/notebook-expor
 
 assert.deepEqual(compareCells([{ type: 'python', source: 'a = 1' }], [{ type: 'python', source: 'a = 1' }]), []);
 assert.equal(compareCells([{ type: 'python', source: 'a = 1' }], [{ type: 'python', source: 'a = 2' }])[0].kind, 'changed');
+const sameSource = { type: 'python', source: '%pylab inline', execution: { status: 'never' } };
+const outputDifference = compareCells([sameSource], [{ ...sameSource, dssCell: { outputs: [{ output_type: 'stream', text: 'ready' }] } }])[0];
+assert.deepEqual(outputDifference.differences, ['outputs']);
+assert.match(outputDifference.summary, /differs \(outputs\)/);
+assert.deepEqual(compareCells([sameSource], [{ ...sameSource, execution: { status: 'succeeded' } }])[0].differences, ['execution state']);
 const exportedPython = pythonExport([{ type: 'markdown', source: '# Intro\nA note' }, { type: 'python', source: 'print(1)' }]);
 assert.match(exportedPython, /^# ---- Markdown cell ----\n# # Intro\n# A note/m);
 assert.equal((exportedPython.match(/---- Markdown cell ----/g) || []).length, 1);

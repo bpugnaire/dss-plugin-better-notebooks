@@ -1,53 +1,50 @@
-# Architecture and delivery path
+# Architecture
 
-## What this component is today
+Better Notebooks is a standard Dataiku HTML/JavaScript plugin webapp. Its native
+mode reads and writes project Jupyter notebook documents through the Python
+backend and connects directly to DSS's same-origin Jupyter HTTP/WebSocket
+transport. The frontend has no server credentials in browser storage.
 
-`webapps/better-notebooks` is a standard Dataiku HTML/JavaScript webapp component.
-It is intentionally self-contained: the same browser-first UI can be evaluated
-locally before it is installed in DSS. In browser preview the app uses
-`localStorage` for the prototype notebooks. Inside DSS, the project notebook
-list and notebook contents come from the native Jupyter notebook APIs; only
-open-tab state and display-only folders remain browser-local.
+## Responsibilities
 
-The component is an instantiable project webapp, rather than an override of the
-native DSS notebook editor. It reads and writes the same native Jupyter notebook
-documents: cell changes, Markdown, reordering, and selected kernel metadata
-round-trip to DSS. Create, copy, and delete use their matching native actions.
-Rename is implemented as an explicit copy/delete operation because DSS exposes
-no native rename endpoint; it warns the user and stops any active session for
-the old name. The project endpoint returns metadata only—dataset rows are never
-returned by this endpoint.
+- `app-runtime.js` orchestrates notebook navigation, editing and UI actions.
+- The save coordinator owns per-notebook debounce, single-flight requests,
+  revision tracking and generation-safe acknowledgement. The backend checks
+  revisions under a per-project/notebook process lock.
+- The session registry owns native session discovery, socket routing, pending
+  requests, display updates, probing, reconnect and invalidation.
+- The execution queue serializes requests per notebook and cancels pending work
+  on interrupt, failure or uncertain completion. Different notebooks can run
+  concurrently.
+- Document serialization preserves the native nbformat fields and cell IDs.
+  Recovery storage is browser-local, scoped to project, webapp and notebook.
 
-## Runtime boundary
+The project-context endpoint returns project and dataset metadata; preview rows
+are obtained separately. SQL executes using a selected connection through
+`SQLExecutor2`. AI assistance uses the project's configured LLM Mesh models.
+Folder organization and open-tab metadata remain local display preferences;
+DSS has no notebook-folder tree to mirror.
 
-The frontend reads the webapp configuration through `dataiku.getWebAppConfig()`
-when that API is available. Nothing else in the UI should directly depend on a
-Dataiku transport API. Future integration code belongs behind the following
-interfaces:
+## Failure boundaries
 
-| Capability | Adapter responsibility | First validation |
-| --- | --- | --- |
-| Project datasets | List datasets and schemas; insert safe loading snippets | Read-only project API call |
-| Notebook storage | Read/write native Jupyter documents | Round-trip one sample notebook |
-| Python execution | Connect to the notebook’s DSS Jupyter session and return stdout/results | Execute `1 + 1` |
-| SQL execution | Submit SQL with an explicitly selected connection/warehouse | Execute `SELECT 1` |
-| AI completion | Send only the current line and intended language to an approved model endpoint | One-line completion, opt-in |
+Async execution and persistence carry their originating notebook rather than
+consulting the currently selected tab. A finished save only clears the recovery
+draft if it acknowledges every local edit. Conflicts suspend further automatic
+writes. Disconnections preserve partial output and never replay code.
 
-Each adapter must enforce project permissions and return structured errors that
-the UI can display. Credentials, warehouse settings, and model keys must never
-be stored in browser storage.
+Native rename is a copy/delete operation; deleting the source stops its native
+sessions. Runtime changes explicitly PATCH the session’s attached kernel with the new
+kernelspec; restarting the old kernel would retain its environment. These operations wait for saves and refuse
+unresolved execution or recovery states.
 
-## Delivery phases
+The backend cannot provide atomic compare-and-swap across native DSS editors
+or other backend processes. Session paths, permissions, kernelspec discovery,
+XSRF and WebSocket behavior must be checked on an identified DSS deployment.
+See [reliability delivery and acceptance recipe](reliability.md).
 
-1. Install this webapp component in a development DSS instance and validate the
-   native read/write round trip against a disposable notebook.
-2. Validate the implemented Jupyter session/WebSocket execution bridge against
-   the supported DSS versions. It starts or reconnects to a native kernel and
-   persists stdout, text displays, and errors; rich tables and images still
-   need dedicated renderers.
-3. Add an explicit SQL connection/warehouse selector, then prove `SELECT 1`
-   through a supported SQL execution surface.
-4. Replace static output placeholders with normalized execution results and a
-   table explorer.
-5. Add semantic Python/SQL diagnostics, one-line completion, and a test matrix
-   across supported DSS versions.
+## Build and verification
+
+Editable source and local modules are bundled into the checked-in webapp
+`app.js` using `pnpm run build:webapp`. `pnpm test` runs local checks only and
+verifies that the shipped bundle matches the source. Browser tests are a
+separate opt-in command; DSS acceptance remains the publication gate.

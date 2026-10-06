@@ -44,7 +44,7 @@
         <nav class="notebook-tabs" id="notebook-tabs" aria-label="Open notebook tabs"></nav>
 
         <section class="notebook-runbar" aria-label="Notebook execution controls">
-          <div class="eyebrow"><span class="notebook-kind">PYTHON NOTEBOOK</span><span class="status-pill" id="kernel-status" data-state="idle">● Idle</span><select class="executor-selector" id="executor-selector" aria-label="Python runtime"><option value="dss_builtin">DSS built-in Python</option></select><select class="executor-selector secondary" id="sql-executor-selector" aria-label="SQL connection"><option value="">SQL connection</option></select></div>
+          <div class="eyebrow"><span class="notebook-kind">PYTHON NOTEBOOK</span><span class="status-pill" id="kernel-status" data-state="idle">● Idle</span><button class="button ghost hidden" id="reconnect-kernel" type="button">Reconnect</button><select class="executor-selector" id="executor-selector" aria-label="Python runtime"><option value="dss_builtin">DSS built-in Python</option></select><select class="executor-selector secondary" id="sql-executor-selector" aria-label="SQL connection"><option value="">SQL connection</option></select></div>
           <div class="head-actions">
             <button class="button primary" id="run-all"><span>▶</span> Run all</button>
             <button class="button ghost hidden" id="stop-run-all"><span>■</span> Stop</button>
@@ -64,6 +64,7 @@
             </div>
           </div>
         </section>
+        <p id="kernel-error" class="notice hidden" role="alert"></p>
         <section class="notebook-head">
           <div>
             <h1 class="notebook-title-row"><span id="notebook-title" tabindex="0" title="Double-click to rename">Explore customer behaviour</span><button class="rename-notebook" id="rename-notebook-button" title="Rename notebook" aria-label="Rename notebook">✎</button></h1>
@@ -143,6 +144,15 @@
         </div>
         <label class="ai-model-setting"><span>Cell assistant model</span><select id="ai-model-selector" aria-label="Cell assistant LLM model"><option value="">Loading LLM Mesh models…</option></select><small>Uses an LLM Mesh model available in this project. You can set a default model in this webapp’s parameters.</small></label>
         <footer><button class="button primary" id="done-settings">Done</button></footer>
+      </section>
+    </div>
+    <p id="storage-warning" class="hidden" role="status">Local recovery storage is unavailable. Keep this page open until your edits are saved to DSS.</p>
+    <div class="modal-backdrop hidden" id="conflict-modal" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
+      <section class="settings-modal-card recovery-modal-card">
+        <header><h2 id="conflict-title">Notebook changed in DSS</h2></header>
+        <p id="conflict-summary"></p>
+        <details><summary>Compare local and DSS edits</summary><pre id="conflict-diff"></pre></details>
+        <footer><button class="button ghost" id="conflict-load-dss">Load DSS version</button><button class="button ghost" id="conflict-export">Export local draft</button><button class="button primary" id="conflict-save-copy">Save as new notebook</button></footer>
       </section>
     </div>
     <div class="modal-backdrop hidden" id="recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-title">

@@ -4,7 +4,10 @@
   "scripts": {
     "build:webapp": "esbuild webapps/better-notebooks/app-runtime.js --bundle --format=iife --minify --target=es2020 --outfile=webapps/better-notebooks/app.js",
     "build:editor": "pnpm run build:webapp",
-    "test:smoke": "node tests/webapp-smoke.mjs && node tests/recovery-drafts.test.mjs && node tests/markdown-sections.test.mjs && node tests/markdown-renderer.test.mjs"
+    "test:smoke": "node tests/webapp-smoke.mjs && node tests/recovery-drafts.test.mjs && node tests/markdown-sections.test.mjs && node tests/markdown-renderer.test.mjs",
+    "test": "node tests/run-tests.mjs",
+    "test:browser": "playwright test --config tests/playwright.config.mjs",
+    "test:reliability": "node --test tests/reliability.test.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.0",
@@ -15,12 +18,14 @@
     "@codemirror/language": "^6.12.0",
     "@codemirror/lint": "^6.9.2",
     "@codemirror/state": "^6.5.2",
-    "@codemirror/view": "^6.39.9",
     "@codemirror/theme-one-dark": "^6.1.2",
+    "@codemirror/view": "^6.39.9",
+    "@playwright/test": "^1.63.0",
     "esbuild": "^0.27.0",
     "plotly.js-dist-min": "^4.0.0",
     "vega": "^6.4.0",
     "vega-embed": "^7.2.0",
     "vega-lite": "^6.4.3"
-  }
+  },
+  "type": "module"
 }
