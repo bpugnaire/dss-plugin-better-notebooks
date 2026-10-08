@@ -65,3 +65,20 @@ The embedded Python formatter and explorer lifecycle are described in
 [the result explorer guide](result-explorer.md), including limits and manual DSS
 acceptance with a user-provided million-row dataset. The native HTML fallback is
 a historical preview; complete exploration uses the structured MIME payload.
+
+## DSS script embedding
+
+The shipped bundle minifies whitespace and syntax, but keeps identifiers. Full
+identifier minification generated `class $${...}` inside Plotly's MapLibre shared
+initializer. Consuming the escaped dollar during embedding changes its declaration
+to `class ${...}` while leaving `$$` references intact, reproducing the reported
+`ReferenceError: $$ is not defined`. The bundle regression tests initialize the
+actual MapLibre shared module in a Node VM with that transformation, without a
+browser, and reject escaped interpolation tokens in the shipped script. This
+increases bundle size slightly while preserving the chart libraries and API.
+
+`QuotaExceededError` for `dssHistory` originates in DSS navigation history; the
+plugin's storage adapter already catches storage failures. Diagnose storage usage
+without clearing notebook recovery drafts indiscriminately. An HTTP 500 from
+`pop-reflected-events` with an empty server cache file is a separate DSS server
+issue and requires instance-side diagnosis, not an explorer code change.

@@ -2,7 +2,7 @@
   "name": "dss-plugin-better-notebooks",
   "private": true,
   "scripts": {
-    "build:webapp": "esbuild webapps/better-notebooks/app-runtime.js --bundle --format=iife --minify --target=es2020 --loader:.py=text --outfile=webapps/better-notebooks/app.js",
+    "build:webapp": "esbuild webapps/better-notebooks/app-runtime.js --bundle --format=iife --minify-whitespace --minify-syntax --target=es2020 --loader:.py=text --outfile=webapps/better-notebooks/app.js",
     "build:editor": "pnpm run build:webapp",
     "test:smoke": "node tests/webapp-smoke.mjs && node tests/recovery-drafts.test.mjs && node tests/markdown-sections.test.mjs && node tests/markdown-renderer.test.mjs",
     "test": "node tests/run-tests.mjs",
