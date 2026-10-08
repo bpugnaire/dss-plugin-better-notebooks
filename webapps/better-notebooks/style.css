@@ -375,3 +375,11 @@ button { cursor: pointer; }
 .cell.more-open .cell-content { overflow:visible; position:relative; z-index:10; }
 .cell.cell-menu-open .type-options,
 .cell.more-open .cell-more-menu { z-index:20; }
+
+/* Recovery surfaces must keep long source and three actions inside the dialog. */
+#conflict-diff, .recovery-diff pre { max-height: 45vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; }
+#conflict-modal footer { display: flex; flex-wrap: wrap; gap: 8px; }
+#storage-warning { position: fixed; bottom: 12px; left: 20%; right: 20%; z-index: 100; padding: 12px; background: #fff3ce; border: 1px solid #d6a637; border-radius: 8px; }
+.cell[data-execution-status="uncertain"] { border-color: #d6a637; }
+
+#kernel-error { overflow-wrap: anywhere; color: #842029; background: #fff0f1; border-color: #e8a0a8; }

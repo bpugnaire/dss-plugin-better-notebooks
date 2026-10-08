@@ -7,6 +7,7 @@ import { setDiagnostics } from '@codemirror/lint';
 import { python } from '@codemirror/lang-python';
 import { sql } from '@codemirror/lang-sql';
 import { markdown } from '@codemirror/lang-markdown';
+import { pythonSourceHelp } from './modules/python-hover.js';
 
 const editors = new Map();
 const silentUpdates = new Set();
@@ -53,21 +54,7 @@ const PYTHON_WORDS = [
 const SQL_WORDS = [
   'SELECT', 'FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'LIMIT', 'JOIN', 'LEFT JOIN', 'INNER JOIN', 'COUNT', 'AVG', 'SUM',
 ].map(label => ({ label, type: 'keyword' }));
-const PYTHON_HOVERS = {
-  len: 'len(object) → number of items',
-  print: 'print(*objects) → writes a text representation',
-  range: 'range(start, stop, step) → integer sequence',
-  sorted: 'sorted(iterable) → new sorted list',
-  dataiku: 'Dataiku Python API module',
-  Dataset: 'dataiku.Dataset(name) → handle to a DSS project dataset',
-  get_dataframe: 'get_dataframe(...) → pandas.DataFrame loaded from the DSS dataset',
-  DataFrame: 'pandas.DataFrame(data) → labeled two-dimensional tabular data',
-  head: 'head(n=5) → first n rows of a DataFrame or Series',
-  describe: 'describe(...) → descriptive statistics for a DataFrame or Series',
-  groupby: 'groupby(by, ...) → groups a DataFrame for aggregation',
-  merge: 'merge(right, ...) → joins two DataFrames',
-  read_csv: 'pandas.read_csv(path, ...) → DataFrame loaded from CSV data',
-};
+
 
 function completeWithTab(view) {
   if (acceptCompletion(view)) return true;
@@ -116,14 +103,14 @@ function completionSource(type, datasets, symbols = [], connections = [], onComp
   };
 }
 
-function hoverFor(datasets, symbols = [], connections = [], onInspect = null) {
+function hoverFor(datasets, symbols = [], connections = [], onInspect = null, sourceContext = () => [], type = 'python') {
   return hoverTooltip(async (view, pos) => {
     const word = view.state.wordAt(pos);
     if (!word) return null;
     const name = view.state.sliceDoc(word.from, word.to);
     const dataset = datasets.find(item => item.name === name);
     const column = datasets.flatMap(item => (item.columns || []).map(value => ({ dataset: item, column: value }))).find(item => item.column.name === name);
-    const pythonDoc = PYTHON_HOVERS[name];
+    const pythonDoc = type === 'python' ? pythonSourceHelp(view.state.doc.toString(), word.to, sourceContext()) : '';
     const liveSymbols = typeof symbols === 'function' ? symbols() : symbols;
     const symbol = liveSymbols.find(item => item.name === name);
     const connection = connections.find(item => item.name === name);
@@ -144,6 +131,9 @@ function hoverFor(datasets, symbols = [], connections = [], onInspect = null) {
         } else if (column) {
           const title = document.createElement('strong'); title.textContent = column.column.name; dom.append(title);
           const detail = document.createElement('span'); detail.textContent = `${column.dataset.name} · ${column.column.type || 'column'}`; dom.append(detail);
+        } else if (pythonDoc) {
+          const title = document.createElement('strong'); title.textContent = name; dom.append(title);
+          const detail = document.createElement('span'); detail.textContent = pythonDoc; dom.append(detail);
         } else if (symbol) {
           const title = document.createElement('strong'); title.textContent = symbol.name; dom.append(title);
           const detail = document.createElement('span'); detail.textContent = symbol.detail || 'Defined in a previous cell'; dom.append(detail);
@@ -166,14 +156,14 @@ function languageFor(type) {
   return python();
 }
 
-export function mount({ id, parent, source, type, datasets, symbols = [], connections = [], onChange, onRun, onRunAndAdvance, onInspect = null, onComplete = null }) {
+export function mount({ id, parent, source, type, datasets, symbols = [], connections = [], sourceContext = () => [], onChange, onRun, onRunAndAdvance, onInspect = null, onComplete = null }) {
   const language = languageFor(type);
   const view = new EditorView({
     state: EditorState.create({
       doc: source,
       extensions: [
         history(), language, notebookLightTheme, syntaxHighlighting(defaultHighlightStyle, { fallback: true }), bracketMatching(), indentOnInput(), closeBrackets(), reviewDiffField,
-        autocompletion({ override: [completionSource(type, datasets, symbols, connections, onComplete)], activateOnTyping: true, activateOnTypingDelay: 120 }), hoverFor(datasets, symbols, connections, onInspect),
+        autocompletion({ override: [completionSource(type, datasets, symbols, connections, onComplete)], activateOnTyping: true, activateOnTypingDelay: 120 }), hoverFor(datasets, symbols, connections, onInspect, sourceContext, type),
         keymap.of([
           { key: 'Ctrl-Space', run: startCompletion },
           { key: 'Alt-/', run: startCompletion },

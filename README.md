@@ -65,3 +65,15 @@ structure to mirror.
 
 Inside DSS, cell execution connects to the notebook’s actual Jupyter kernel,
 and its resulting outputs are persisted back to the native notebook.
+
+## Reliability delivery
+
+Notebook saves and execution sessions are isolated per notebook. Revision
+checks detect stale saves, recovery drafts survive failed requests, and network
+reconnection never replays user code. Stop interrupts the notebook immediately;
+long calculations are no longer subject to a 90-second frontend deadline.
+
+Run the local JavaScript/Python checks and verify the packaged bundle with
+`pnpm test` after setting up Flask for the test interpreter. This command does
+not launch a browser. Browser tests are opt-in and remain unverified for this
+delivery. See [setup, limitations and the pending DSS acceptance recipe](docs/reliability.md).

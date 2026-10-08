@@ -1,6 +1,10 @@
 """DSS project context and native notebook storage adapters."""
 
 import ast
+import hashlib
+import threading
+import uuid
+from contextlib import contextmanager
 import json
 import re
 
@@ -13,6 +17,39 @@ MAX_CHECK_SOURCE_LENGTH = 200_000
 MAX_AI_SOURCE_LENGTH = 100_000
 MAX_AI_QUESTION_LENGTH = 10_000
 MAX_GLOBAL_ASSISTANT_CONTEXT_LENGTH = 180_000
+
+
+# Locks serialize this backend process only; DSS native editors and other
+# backend processes remain outside this critical section.
+_notebook_locks = {}
+_notebook_locks_guard = threading.Lock()
+
+
+@contextmanager
+def notebook_lock(project, name):
+    key = (project.project_key, name)
+    with _notebook_locks_guard:
+        lock, users = _notebook_locks.get(key, (threading.RLock(), 0))
+        _notebook_locks[key] = (lock, users + 1)
+    try:
+        with lock:
+            yield
+    finally:
+        with _notebook_locks_guard:
+            _, users = _notebook_locks[key]
+            if users == 1:
+                del _notebook_locks[key]
+            else:
+                _notebook_locks[key] = (lock, users - 1)
+
+
+def notebook_revision(content):
+    canonical = json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def notebook_response(content):
+    return jsonify({"notebook": content, "revision": notebook_revision(content)})
 
 
 def current_project():
@@ -140,7 +177,7 @@ def empty_notebook(kernel_spec):
         "nbformat_minor": 5,
         "metadata": {"kernelspec": kernel_spec, "language_info": {"name": "python"}},
         "cells": [{
-            "cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": [],
+            "id": uuid.uuid4().hex, "cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": [],
         }],
     }
 
@@ -246,7 +283,7 @@ def list_notebooks():
 @app.route("/notebooks/<path:notebook_name>", methods=["GET"])
 def get_notebook(notebook_name):
     content = current_project().get_jupyter_notebook(notebook_name).get_content().get_raw()
-    return jsonify({"notebook": content})
+    return notebook_response(content)
 
 
 @app.route("/notebooks", methods=["POST"])
@@ -260,7 +297,7 @@ def create_notebook():
         return jsonify({"error": "The selected Python runtime is not available."}), 400
     project = current_project()
     project.create_jupyter_notebook(name, empty_notebook(runtime["kernelSpec"]))
-    return jsonify({"notebook": project.get_jupyter_notebook(name).get_content().get_raw()}), 201
+    return notebook_response(project.get_jupyter_notebook(name).get_content().get_raw()), 201
 
 
 @app.route("/notebooks/<path:notebook_name>", methods=["PUT"])
@@ -270,10 +307,26 @@ def save_notebook(notebook_name):
     content = payload.get("notebook")
     if not isinstance(content, dict) or not isinstance(content.get("cells"), list):
         return jsonify({"error": "A valid Jupyter notebook document is required."}), 400
-    notebook_content = current_project().get_jupyter_notebook(notebook_name).get_content()
-    notebook_content.content = content
-    notebook_content.save()
-    return jsonify({"notebook": notebook_content.get_raw()})
+    expected_revision = payload.get("expectedRevision")
+    if not expected_revision:
+        return jsonify({"error": "Reload the notebook before saving.", "code": "REVISION_REQUIRED"}), 428
+    project = current_project()
+    with notebook_lock(project, notebook_name):
+        notebook_content = project.get_jupyter_notebook(notebook_name).get_content()
+        current = notebook_content.get_raw()
+        revision = notebook_revision(current)
+        # Idempotent acknowledgement after a lost reply; never overwrite here.
+        if notebook_revision(content) == revision:
+            return notebook_response(current)
+        if expected_revision != revision:
+            return jsonify({"error": "The notebook changed in DSS.", "code": "NOTEBOOK_CONFLICT", "revision": revision}), 409
+        notebook_content.content = content
+        notebook_content.save()
+        # save() may normalize the stored nbformat document without updating
+        # this Content object's local copy. Hash the actual persisted document
+        # so our own next save does not look like a concurrent DSS edit.
+        persisted = project.get_jupyter_notebook(notebook_name).get_content().get_raw()
+        return notebook_response(persisted)
 
 
 @app.route("/notebooks/<path:notebook_name>/rename", methods=["POST"])
@@ -303,7 +356,7 @@ def copy_notebook(notebook_name):
     project = current_project()
     content = project.get_jupyter_notebook(notebook_name).get_content().get_raw()
     project.create_jupyter_notebook(next_name, content)
-    return jsonify({"notebook": project.get_jupyter_notebook(next_name).get_content().get_raw()}), 201
+    return notebook_response(project.get_jupyter_notebook(next_name).get_content().get_raw()), 201
 
 
 @app.route("/notebooks/<path:notebook_name>", methods=["DELETE"])
