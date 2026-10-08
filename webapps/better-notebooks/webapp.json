@@ -7,7 +7,10 @@
   "baseType": "STANDARD",
   "hasBackend": true,
   "noJSSecurity": false,
-  "standardWebAppLibraries": ["jquery", "dataiku"],
+  "standardWebAppLibraries": [
+    "jquery",
+    "dataiku"
+  ],
   "params": [
     {
       "name": "storage_namespace",
@@ -21,6 +24,30 @@
       "type": "STRING",
       "defaultValue": "",
       "description": "Optional LLM Mesh ID for cell assistance. Leave blank to use the first text-generation model accessible in this project."
+    },
+    {
+      "name": "result_snapshot_mib",
+      "label": "Maximum snapshot size (MiB)",
+      "type": "INT",
+      "defaultValue": 128
+    },
+    {
+      "name": "result_kernel_mib",
+      "label": "Snapshot budget per kernel (MiB)",
+      "type": "INT",
+      "defaultValue": 256
+    },
+    {
+      "name": "result_ttl_minutes",
+      "label": "Snapshot inactivity expiry (minutes)",
+      "type": "INT",
+      "defaultValue": 30
+    },
+    {
+      "name": "result_export_mib",
+      "label": "Browser CSV export limit (MiB)",
+      "type": "INT",
+      "defaultValue": 100
     }
   ],
   "roles": []

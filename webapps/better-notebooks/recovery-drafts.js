@@ -20,6 +20,7 @@ function cellDifferences(draft, dss) {
   if (Boolean(draft.collapsed) !== Boolean(dss.collapsed)) differences.push('collapsed state');
   const outputs = cell => cell.dssCell?.outputs || cell.output?.outputs || [];
   if (canonicalDocument(outputs(draft)) !== canonicalDocument(outputs(dss))) differences.push('outputs');
+  if (canonicalDocument(draft.dssCell?.metadata?.betterNotebooks?.resultExplorer || null) !== canonicalDocument(dss.dssCell?.metadata?.betterNotebooks?.resultExplorer || null)) differences.push('result explorer settings');
   // Older drafts did not record execution states; do not invent a comparison.
   if (draft.execution && dss.execution && canonicalDocument(comparableExecution(draft)) !== canonicalDocument(comparableExecution(dss))) differences.push('execution state');
   return differences;

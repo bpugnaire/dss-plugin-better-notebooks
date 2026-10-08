@@ -1,0 +1,66 @@
+import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+import { setup } from './browser-fixture.mjs';
+const grid = page => page.locator('#cells .result-explorer').first();
+async function run(page) {
+  await page.locator('.run-cell').first().click();
+  await expect(grid(page).locator('.result-scope').first()).toHaveText('Complete snapshot in kernel');
+  await expect(grid(page).locator('.result-pagination')).toContainText('1–100 / 1,000');
+}
+test('complete pagination, filters, multi sort, hidden columns, keyboard and CSV', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await setup(page, { explorer: true }); await run(page);
+  await grid(page).getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(grid(page).locator('.result-grid tbody tr').first()).toContainText('100');
+  await grid(page).getByLabel('Filter operator n', { exact: true }).selectOption('ge');
+  await grid(page).getByLabel('Filter value n', { exact: true }).fill('900');
+  await expect(grid(page).locator('.result-pagination')).toContainText('1–100 / 100 filtered');
+  await grid(page).locator('[data-result-sort="country"]').click();
+  await grid(page).locator('[data-result-sort="n"]').click({ modifiers: ['Shift'] });
+  await grid(page).locator('[data-result-sort="n"]').click({ modifiers: ['Shift'] });
+  await expect(grid(page).locator('.result-grid tbody tr').first()).toContainText('999');
+  await grid(page).getByText('Columns', { exact: true }).click();
+  await grid(page).locator('[data-result-column="country"]').uncheck();
+  await expect(grid(page).locator('[data-result-sort="country"]')).toHaveCount(0);
+  const download = page.waitForEvent('download');
+  await grid(page).getByRole('button', { name: 'Export CSV' }).click();
+  const csv = await readFile(await (await download).path(), 'utf8');
+  expect(csv.split(/\r?\n/)[0]).toBe('n'); expect(csv).toContain('999'); expect(csv).toContain('900');
+  expect(csv).not.toContain('country');
+  const wrap = grid(page).locator('.result-table-wrap'); await wrap.focus(); await page.keyboard.press('ArrowDown');
+  await expect(grid(page).locator('.result-grid tbody td').first()).toBeFocused();
+  expect(errors).toEqual([]);
+});
+test('chart, profile, shared expanded state, settings and historical restoration', async ({ page }) => {
+  const { documents } = await setup(page, { explorer: true }); await run(page);
+  await grid(page).getByRole('tab', { name: 'Graphique' }).click();
+  await grid(page).locator('[data-chart-field="x"]').selectOption('c1');
+  await grid(page).getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(grid(page).locator('.result-plot .main-svg').first()).toBeVisible();
+  await grid(page).getByRole('tab', { name: 'Profil', exact: true }).click();
+  await expect(grid(page).locator('.result-profile')).toContainText('Cardinality: 1000');
+  await grid(page).getByRole('button', { name: 'Expand', exact: true }).click();
+  const modal = page.locator('#dataframe-modal');
+  await modal.getByRole('tab', { name: 'Table', exact: true }).click();
+  await expect(grid(page).getByRole('tab', { name: 'Table' })).toHaveAttribute('aria-selected', 'true');
+  await page.locator('#close-dataframe-modal').click();
+  await grid(page).getByRole('tab', { name: 'Graphique' }).click();
+  await expect.poll(() => documents.get('A').notebook.cells[0].metadata.betterNotebooks?.resultExplorer?.results?.[0]?.chart.x).toBe('c1');
+  await page.reload();
+  await expect(grid(page).locator('.result-scope').first()).toContainText('Historical preview');
+  await expect(grid(page).locator('.result-plot .main-svg').first()).toBeVisible();
+  expect(await page.evaluate(() => window.fakeSockets.length)).toBe(0);
+});
+test('expired snapshot never replays code and older filter responses cannot overwrite newer ones', async ({ page }) => {
+  await setup(page, { explorer: true }); await run(page);
+  await page.evaluate(() => { window.explorerDelay = 600; });
+  await grid(page).getByLabel('Filter operator n', { exact: true }).selectOption('ge');
+  await grid(page).getByLabel('Filter value n', { exact: true }).fill('800');
+  await expect.poll(() => page.evaluate(() => window.explorerPayloads.some(p => p.filters?.some(f => f.value === '800')))).toBeTruthy();
+  await grid(page).getByLabel('Filter value n', { exact: true }).fill('950');
+  await expect(grid(page).locator('.result-pagination')).toContainText('/ 50 filtered');
+  await page.evaluate(() => { window.explorerExpired = true; window.explorerDelay = 0; });
+  await grid(page).getByRole('button', { name: 'Reset', exact: true }).click();
+  await expect(grid(page).locator('.result-notice')).toContainText('Snapshot expired');
+  expect(await page.evaluate(() => window.kernelRequests.filter(({ message }) => message.header.msg_type === 'execute_request' && !message.content.silent).length)).toBe(1);
+});

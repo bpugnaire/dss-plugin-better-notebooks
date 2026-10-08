@@ -14,6 +14,8 @@ center, while providing a faster, cleaner development experience.
   Python/SQL starter code, and see datasets linked by the current notebook.
 - Real DSS execution with selectable Python environments, SQL connections,
   streamed output, interrupt support, and stop-on-error execution flow.
+- Structured DataFrame exploration with typed pagination, column filters, multiple
+  sorts, CSV export and persistent Table / Graphique / Profil views.
 - Rich results for DataFrames and visualizations, including interactive
   Plotly/Vega charts and standard Jupyter image, HTML, JSON, and table output.
 - A direct handoff from a DataFrame to a managed DSS dataset, including the
@@ -77,3 +79,6 @@ Run the local JavaScript/Python checks and verify the packaged bundle with
 `pnpm test` after setting up Flask for the test interpreter. This command does
 not launch a browser. Browser tests are opt-in and remain unverified for this
 delivery. See [setup, limitations and the pending DSS acceptance recipe](docs/reliability.md).
+
+See [the structured result explorer guide](docs/result-explorer.md) for setup,
+limits and the manual DSS acceptance recipe.

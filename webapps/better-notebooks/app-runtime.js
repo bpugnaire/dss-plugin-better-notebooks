@@ -14,6 +14,8 @@ import { datasetVariableName as datasetVariable, linkedDatasets as findLinkedDat
 import { nativeDisplayMetadata, saveStatus } from './modules/dss-persistence.js';
 import { sectionModel } from './modules/markdown-sections.js';
 import { renderMarkdown } from './modules/markdown-renderer.js';
+import explorerSource from './modules/result-explorer.py';
+import { ResultExplorerUI, TABLE_MIME, validTable } from './modules/result-explorer.js';
 
 const webappConfig = typeof dataiku !== 'undefined' && typeof dataiku.getWebAppConfig === 'function'
   ? dataiku.getWebAppConfig() : {};
@@ -106,7 +108,7 @@ function loadCells() {
   try { return JSON.parse(storage.getItem(storageKey('cells'))) || starterCells; }
   catch { return starterCells; }
 }
-function cloneCells(cells) { return cells.map(cell => ({ ...cell, id: crypto.randomUUID() })); }
+function cloneCells(cells) { return cells.map(cell => ({ ...structuredClone(cell), id: crypto.randomUUID() })); }
 function loadNotebooks() {
   try {
     const saved = JSON.parse(storage.getItem(storageKey('notebooks')));
@@ -147,6 +149,7 @@ async function switchNotebook(id) {
     catch (error) { setSavedState('DSS notebook load failed', true); console.warn(error); return; }
   }
   if (switchGeneration !== notebookSwitchGeneration) return;
+  closeDataframeModal();
   notebook.open = true; state.activeNotebookId = id; state.notebooks.activeNotebookId = id; state.cells = notebook.cells; state.selected.clear(); state.activeCellId = null; dss.activeRuntimeId = notebook.runtimeId || 'dss_builtin'; resetHistory(); if (!notebook.remote) persistNotebooks(); renderWorkspace(); if (notebook.conflict) showSaveConflict(notebook).catch(console.warn); else if (notebook.saveState === 'error') setSavedState('Save failed — retry', true); else setSavedState(notebook.saveState === 'saving' ? 'Saving to DSS…' : 'Loaded from DSS'); window.scrollTo({ top: 0, behavior: 'instant' });
 }
 function persistNotebooks() {
@@ -288,6 +291,7 @@ const sessions = new SessionRegistry({
   },
   onDisconnect: notebook => executionQueue.cancel(notebook, Object.assign(new Error('Connection lost; result not confirmed.'), { code: 'RESULT_UNCONFIRMED' })),
   onAutomaticRestart: notebook => {
+    resultExplorer.invalidateNotebook(notebook);
     notebook.kernelRestartedAutomatically = true;
     if (notebook === activeNotebook()) renderKernelStatus();
   },
@@ -316,11 +320,33 @@ async function executeInDssKernel(notebook, source, onOutput, options = {}) {
   if (options.cancelled?.()) throw Object.assign(new Error('Execution interrupted.'), { code: 'INTERRUPTED' });
   if (!kernel.displayConfigured) {
     await sessions.execute(kernel, "try:\n    from IPython import get_ipython\n    get_ipython().run_line_magic('matplotlib', 'inline')\nexcept Exception:\n    pass", null, { silent: true });
+    const limits = { snapshot_bytes: explorerLimit('result_snapshot_mib', 128) * 1024 ** 2, kernel_bytes: explorerLimit('result_kernel_mib', 256) * 1024 ** 2, ttl: explorerLimit('result_ttl_minutes', 30) * 60 };
+    const bootstrap = `${explorerSource}\ninstall(${JSON.stringify(limits)})`;
+    const installed = await sessions.execute(kernel, `exec(${JSON.stringify(bootstrap)}, {})`, null, { silent: true });
+    kernel.explorerConfigured = !installed.outputs.some(output => output.output_type === 'error');
+    if (!kernel.explorerConfigured) console.warn('Structured explorer unavailable in this Python environment. Native output will be retained.');
     kernel.displayConfigured = true;
   }
   if (options.cancelled?.()) throw Object.assign(new Error('Execution interrupted.'), { code: 'INTERRUPTED' });
   return sessions.execute(kernel, source, onOutput, options);
 }
+const explorerLimit = (name, fallback) => {
+  const value = Number(webappConfig[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+const resultExplorer = new ResultExplorerUI({
+  save: saveNotebook,
+  exportBytes: explorerLimit('result_export_mib', 100) * 1024 ** 2,
+  query: (notebook, payload) => executionQueue.enqueue(notebook, async cancelled => {
+    // Catch inside the queue: a result query failure must not cancel user cells.
+    try {
+      if (cancelled() || notebook.transitioning) return { ok: false, code: 'UNAVAILABLE', error: 'Notebook is transitioning or the request was cancelled.' };
+      let kernel = sessions.sessions.get(notebook);
+      if (!kernel || kernel.invalid) kernel = await sessions.connect(notebook, `${projectContext.key}/${notebook.name}.ipynb`, notebookKernelName(notebook), { existingOnly: true });
+      return await sessions.query(kernel, payload);
+    } catch (error) { return { ok: false, code: error.code || 'UNAVAILABLE', error: error.message }; }
+  }),
+});
 async function inspectInDssKernel(notebook, code, cursorPos) {
   const kernel = sessions.sessions.get(notebook);
   if (!kernel || kernel.state !== 'idle') return '';
@@ -1068,7 +1094,7 @@ async function applyGlobalAssistantProposalChange(changeId) {
   }
   if (change.op === 'replace_cell') { const cell = getCell(change.cellId); if (cell) { Object.assign(cell, { type: change.type, source: change.source, output: '', meta: '' }); queuePythonCheck(cell); save(); } }
   if (change.op === 'insert_after') { const index = cellIndex(change.cellId); if (index >= 0) { state.cells.splice(index + 1, 0, { ...newCell(change.cell.type), source: change.cell.source }); save(); } }
-  if (change.op === 'delete_cell' && state.cells.length > 1) { state.cells = state.cells.filter(cell => cell.id !== change.cellId); save(); }
+  if (change.op === 'delete_cell' && state.cells.length > 1) { const cell = getCell(change.cellId); if (cell) resultExplorer.releaseCell(activeNotebook(), cell); state.cells = state.cells.filter(cell => cell.id !== change.cellId); save(); }
   if (change.op === 'create_notebook') {
     if (dss.enabled) {
       const payload = await dssRequest('notebooks', { method: 'POST', body: JSON.stringify({ name: change.name, runtimeId: dss.activeRuntimeId }) });
@@ -1097,6 +1123,7 @@ function outputMarkup(kind, cellId = '') {
       rendered.push(`<pre class="runtime-output stream">${escapeHTML(streamText)}</pre>`);
       streamText = '';
     };
+    let tableOrdinal = 0;
     kind.outputs.forEach((output, outputIndex) => {
       if (output.output_type === 'stream') {
         streamText += outputText(output.text);
@@ -1107,6 +1134,13 @@ function outputMarkup(kind, cellId = '') {
         const summary = `${output.ename || 'Error'}: ${output.evalue || ''}`;
         const fullError = outputText([summary, ...(output.traceback || [])].join('\n'));
         rendered.push(`<section class="error-output"><header><div class="error-summary"><strong>${escapeHTML(output.ename || 'Execution error')}</strong><span>${escapeHTML(output.evalue || '')}</span></div></header><details><summary>Show traceback</summary><div class="traceback-box"><button data-copy-error="${escapeHTML(cellId)}-${outputIndex}" title="Copy error"><i class="copy-icon" aria-hidden="true"></i> Copy error</button><pre class="runtime-output">${escapeHTML(fullError)}</pre></div></details><textarea class="error-copy-source" hidden>${escapeHTML(fullError)}</textarea></section>`);
+        return;
+      }
+      const table = output.data?.[TABLE_MIME];
+      const notebook = activeNotebook();
+      const cell = notebook?.cells.find(c => c.id === cellId);
+      if (cell && validTable(table)) {
+        rendered.push(resultExplorer.bind(notebook, cell, tableOrdinal++, table));
         return;
       }
       const dataframe = dataframeMarkup(output.data?.['text/html'], cellId);
@@ -1131,9 +1165,11 @@ function updateRenderedCellOutput(cell) {
   const node = document.querySelector(`[data-id="${cell.id}"]`); if (!node) return;
   const aiContainer = node.querySelector('.cell-ai-container');
   if (aiContainer) aiContainer.innerHTML = aiHelpMarkup(cell);
+  resultExplorer.dispose(node);
   node.querySelector('.cell-output').innerHTML = cell.type === 'markdown' && !cell.markdownEditing
     ? `<div class="markdown-render" tabindex="0">${markdownMarkup(cell.source)}</div>`
     : outputMarkup(cell.output, cell.id);
+  resultExplorer.hydrate(node);
   hydrateRichMime(node).catch(error => console.warn('Could not hydrate rich output.', error));
 }
 function updateRenderedRunState(cell) {
@@ -1167,14 +1203,8 @@ function dataframeMarkup(html, cellId = '') {
   const document = new DOMParser().parseFromString(outputText(html), 'text/html');
   const sourceTable = document.querySelector('table.dataframe');
   if (!sourceTable) return '';
-  const renderRows = selector => [...sourceTable.querySelectorAll(selector)].map(row => `<tr>${[...row.cells].map((cell, index) => {
-    const tag = cell.tagName.toLowerCase();
-    const sort = tag === 'th' && row.parentElement.tagName === 'THEAD' && index ? ` data-sort-column="${index}" title="Sort by ${escapeHTML(cell.textContent || '')}"` : '';
-    return `<${tag}${sort}>${escapeHTML(cell.textContent || '')}</${tag}>`;
-  }).join('')}</tr>`).join('');
-  const columnCount = sourceTable.querySelector('thead tr')?.cells.length ? sourceTable.querySelector('thead tr').cells.length - 1 : 0;
-  const rowCount = sourceTable.querySelectorAll('tbody tr').length;
-  return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>${rowCount} rows × ${columnCount} columns</span><label class="dataframe-filter">⌕<input type="search" placeholder="Filter rows" aria-label="Filter DataFrame rows" /></label><button type="button" class="create-dataset" data-create-dataset-from-cell="${escapeHTML(cellId)}">Create dataset</button><button type="button" class="chart-dataframe">Chart</button><button type="button" class="explore-dataframe">Explore</button></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
+  const renderRows = selector => [...sourceTable.querySelectorAll(selector)].map(row => `<tr>${[...row.cells].map(cell => `<${cell.tagName.toLowerCase()}>${escapeHTML(cell.textContent || '')}</${cell.tagName.toLowerCase()}>`).join('')}</tr>`).join('');
+  return `<section class="dataframe-output"><header><strong>DataFrame</strong><span>Historical HTML preview — reexecute to explore typed, complete results</span></header><div class="dataframe-table-wrap"><table class="rich-dataframe"><thead>${renderRows('thead tr')}</thead><tbody>${renderRows('tbody tr')}</tbody></table></div></section>`;
 }
 function markdownMarkup(source) { return renderMarkdown(source); }
 function autoHeight(textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`; }
@@ -1183,6 +1213,7 @@ function renderCells() {
   const scrollPositions = captureRenderScroll(cellsEl);
   const editorApi = BetterNotebookEditor;
   editorApi.destroyAll();
+  resultExplorer.dispose(cellsEl);
   cellsEl.innerHTML = '';
   const markdownSections = sectionModel(state.cells);
   const proposal = stagedProposal();
@@ -1252,6 +1283,7 @@ function renderCells() {
     const gap = document.createElement('div'); gap.className = 'cell-insert-gap'; gap.dataset.dropIndex = String(index + 1); gap.innerHTML = `<div class="insert-menu"><button data-insert-after="${data.id}" data-insert-type="python">+&nbsp; Code Cell</button><button data-insert-after="${data.id}" data-insert-type="markdown">+&nbsp; Markdown Cell</button></div>`; cellsEl.appendChild(gap);
   });
   renderToolbar(); renderOutline(); renderCellMinimap();
+  resultExplorer.hydrate(cellsEl);
   hydrateRichMime(cellsEl).catch(error => console.warn('Could not hydrate rich outputs.', error));
   // Removing a focused CodeMirror node can cause the browser to compensate
   // after one or more layout frames. This is most visible when the final cell
@@ -1327,7 +1359,7 @@ async function renameRemoteNotebook(notebook) {
     setSavedState('Renaming in DSS…');
     const payload = await dssRequest(`notebooks/${encodeURIComponent(notebook.name)}/rename`, { method: 'POST', body: JSON.stringify({ name: nextName }) });
     const wasActive = notebook === activeNotebook();
-    sessions.invalidate(notebook); clearDraft(notebook); notebook.kernelState = null;
+    sessions.invalidate(notebook); resultExplorer.invalidateNotebook(notebook); clearDraft(notebook); notebook.kernelState = null;
     notebook.id = payload.name; notebook.name = payload.name;
     if (wasActive) { state.activeNotebookId = payload.name; state.notebooks.activeNotebookId = payload.name; }
     renderWorkspace(); setSavedState('Renamed in DSS');
@@ -1379,7 +1411,7 @@ async function deleteActiveNotebook() {
       setSavedState('Deleting from DSS…');
       await dssRequest(`notebooks/${encodeURIComponent(notebook.name)}`, { method: 'DELETE' });
       const wasActive = notebook === activeNotebook();
-      sessions.invalidate(notebook); saves.dispose(notebook); clearDraft(notebook);
+      sessions.invalidate(notebook); resultExplorer.forgetNotebook(notebook); saves.dispose(notebook); clearDraft(notebook);
       state.notebooks.notebooks = state.notebooks.notebooks.filter(item => item.id !== notebook.id);
       if (wasActive) await switchNotebook(next.id); renderWorkspace(); setSavedState('Deleted from DSS');
     } catch (error) { setSavedState(`DSS delete failed: ${error.message}`, true); console.warn(error); }
@@ -1407,6 +1439,7 @@ async function runCell(id, notebook = activeNotebook(), captured = null) {
   const original = notebook.cells.find(cell => cell.id === id); if (!original) return false;
   const input = captured || { type: original.type, source: original.type === 'sql' ? sqlExecutionSource(original.source) : original.source };
   if (notebook.transitioning || notebook.recoveryPending || notebook.conflict) { setSavedState('Resolve the recovery or save conflict before running.', true); return false; }
+  resultExplorer.releaseCell(notebook, original);
   setExecution(original, { status: 'queued' });
   if (notebook === activeNotebook()) renderCells();
   try {
@@ -1427,6 +1460,7 @@ async function performRunCell(notebook, id, input, cancelled) {
   const currentCell = () => notebook.cells.find(item => item.id === id);
   const updateOutput = outputs => {
     const target = currentCell(); if (!target) return;
+    resultExplorer.reconcile(notebook, target, outputs);
     target.output = { outputs: structuredClone(outputs) };
     target.dssCell = { ...(target.dssCell || {}), outputs: structuredClone(outputs) };
     if (notebook === activeNotebook()) updateRenderedCellOutput(target);
@@ -1480,10 +1514,10 @@ async function runAndAdvance(id) {
 }
 
 function selectCell(id, selected) { selected ? state.selected.add(id) : state.selected.delete(id); renderCells(); }
-function duplicateSelected() { const selection = state.cells.filter(cell => state.selected.has(cell.id)); if (!selection.length) return; const last = Math.max(...selection.map(cell => cellIndex(cell.id))); const copies = selection.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); state.cells.splice(last + 1, 0, ...copies); state.selected = new Set(copies.map(cell => cell.id)); save(); renderCells(); }
-function copySelected(remove = false) { const selected = state.cells.filter(cell => state.selected.has(cell.id)); if (!selected.length) return; state.clipboard = selected.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); if (remove) { state.cells = state.cells.filter(cell => !state.selected.has(cell.id)); state.selected.clear(); } save(); renderCells(); }
-function pasteCells(afterId) { if (!state.clipboard.length) return; const cells = state.clipboard.map(cell => ({ ...cell, id: crypto.randomUUID(), meta: '' })); const index = afterId ? cellIndex(afterId) + 1 : state.cells.length; state.cells.splice(index, 0, ...cells); state.selected = new Set(cells.map(cell => cell.id)); save(); renderCells(); }
-function deleteSelected() { if (!state.selected.size) return; state.selected.forEach(id => sessions.clearOutputs(activeNotebook(), id)); state.cells = state.cells.filter(cell => !state.selected.has(cell.id)); state.selected.clear(); save(); renderCells(); }
+function duplicateSelected() { const selection = state.cells.filter(cell => state.selected.has(cell.id)); if (!selection.length) return; const last = Math.max(...selection.map(cell => cellIndex(cell.id))); const copies = selection.map(cell => ({ ...structuredClone(cell), id: crypto.randomUUID(), meta: '' })); state.cells.splice(last + 1, 0, ...copies); state.selected = new Set(copies.map(cell => cell.id)); save(); renderCells(); }
+function copySelected(remove = false) { const selected = state.cells.filter(cell => state.selected.has(cell.id)); if (!selected.length) return; state.clipboard = selected.map(cell => ({ ...structuredClone(cell), id: crypto.randomUUID(), meta: '' })); if (remove) { selected.forEach(cell => resultExplorer.releaseCell(activeNotebook(), cell, selected.map(c => c.id))); state.cells = state.cells.filter(cell => !state.selected.has(cell.id)); state.selected.clear(); } save(); renderCells(); }
+function pasteCells(afterId) { if (!state.clipboard.length) return; const cells = state.clipboard.map(cell => ({ ...structuredClone(cell), id: crypto.randomUUID(), meta: '' })); const index = afterId ? cellIndex(afterId) + 1 : state.cells.length; state.cells.splice(index, 0, ...cells); state.selected = new Set(cells.map(cell => cell.id)); save(); renderCells(); }
+function deleteSelected() { if (!state.selected.size) return; state.selected.forEach(id => { const cell = getCell(id); if (cell) resultExplorer.releaseCell(activeNotebook(), cell, [...state.selected]); sessions.clearOutputs(activeNotebook(), id); }); state.cells = state.cells.filter(cell => !state.selected.has(cell.id)); state.selected.clear(); save(); renderCells(); }
 function moveCells(dragIds, targetId, after = false) {
   const ids = [...new Set(dragIds)].filter(id => getCell(id)); if (!ids.length || ids.includes(targetId)) return;
   const moving = state.cells.filter(cell => ids.includes(cell.id));
@@ -1544,7 +1578,7 @@ async function runRelative(id, direction) {
   for (const input of inputs) if (!await runCell(input.id, notebook, input)) break;
 }
 
-function clearCellOutput(id) { const cell = getCell(id); if (!cell) return; sessions.clearOutputs(activeNotebook(), id); cell.output = ''; cell.meta = ''; cell.execution = { status: 'never', order: null, startedAt: null, finishedAt: null, durationMs: null }; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; save(); renderCells(); }
+function clearCellOutput(id) { const cell = getCell(id); if (!cell) return; resultExplorer.releaseCell(activeNotebook(), cell); sessions.clearOutputs(activeNotebook(), id); cell.output = ''; cell.meta = ''; cell.execution = { status: 'never', order: null, startedAt: null, finishedAt: null, durationMs: null }; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; save(); renderCells(); }
 function toggleSection(id, collapsed = null) {
   const cell = getCell(id);
   if (!cell || cell.type !== 'markdown' || !sectionModel(state.cells).sections.has(id)) return;
@@ -1561,6 +1595,7 @@ async function restartKernel() {
   setNotebookTransition(notebook, true);
   try {
     await flushDssSave(notebook);
+    resultExplorer.invalidateNotebook(notebook);
     await sessions.replace(notebook, `${projectContext.key}/${notebook.name}.ipynb`, notebookKernelName(notebook));
     if (notebook === activeNotebook()) setSavedState('Kernel restarted');
   } catch (error) { notebook.kernelState = 'error'; notebook.kernelErrorTitle = 'Kernel restart failed'; notebook.kernelError = error.message; if (notebook === activeNotebook()) { renderKernelStatus(); setSavedState(`Kernel restart failed: ${error.message}`, true); } }
@@ -1570,6 +1605,7 @@ async function restartKernelWithRuntime(notebook) {
   notebook.kernelRestartedAutomatically = false;
   await flushDssSave(notebook);
   if (!projectContext.key) await loadProjectContext();
+  resultExplorer.invalidateNotebook(notebook);
   return sessions.replace(notebook, `${projectContext.key}/${notebook.name}.ipynb`, notebookKernelName(notebook));
 }
 
@@ -1756,7 +1792,7 @@ async function handleNotebookMenuAction(event) {
   if (action === 'export-ipynb') exportNotebook('ipynb');
   if (action === 'export-py') exportNotebook('py');
   if (action === 'copy-python') { await navigator.clipboard?.writeText(state.cells.filter(cell => cell.type !== 'markdown').map(cell => cell.source).join('\n\n# %%\n\n')); setSavedState('Python cells copied'); }
-  if (action === 'clear-outputs') { state.cells.forEach(cell => { sessions.clearOutputs(activeNotebook(), cell.id); cell.output = ''; cell.meta = ''; cell.execution = { status: 'never', order: null, startedAt: null, finishedAt: null, durationMs: null }; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; }); save(); renderCells(); }
+  if (action === 'clear-outputs') { state.cells.forEach(cell => { resultExplorer.releaseCell(activeNotebook(), cell, state.cells.map(c => c.id)); sessions.clearOutputs(activeNotebook(), cell.id); cell.output = ''; cell.meta = ''; cell.execution = { status: 'never', order: null, startedAt: null, finishedAt: null, durationMs: null }; cell.dssCell = { ...(cell.dssCell || {}), outputs: [], execution_count: null }; }); save(); renderCells(); }
   if (action === 'restart-kernel') restartKernel();
   if (action === 'collapse-all') { const sections = sectionModel(state.cells); state.cells.filter(cell => sections.sections.get(cell.id)?.collapsedCount).forEach(cell => { cell.collapsed = true; state.collapsedHeadings.add(cell.id); }); save(false); renderCells(); }
   if (action === 'expand-all') { state.cells.forEach(cell => { cell.collapsed = false; }); state.collapsedHeadings.clear(); save(false); renderCells(); }
@@ -1958,29 +1994,6 @@ document.querySelector('#outline-list').addEventListener('click', event => {
   document.querySelector(`[data-id="${event.target.closest('[data-outline-id]')?.dataset.outlineId}"]`)?.scrollIntoView({ behavior:'smooth', block:'center' });
 });
 document.querySelector('#dismiss-notice').addEventListener('click', event => event.target.closest('.notice').remove());
-function filterDataframe(section, query) {
-  const normalized = query.trim().toLowerCase();
-  section.querySelectorAll('tbody tr').forEach(row => { row.hidden = Boolean(normalized) && !row.textContent.toLowerCase().includes(normalized); });
-}
-function sortDataframe(table, column) {
-  const body = table.tBodies[0]; const rows = [...body.rows];
-  const direction = table.dataset.sortColumn === String(column) && table.dataset.sortDirection === 'asc' ? 'desc' : 'asc';
-  rows.sort((left, right) => left.cells[column].textContent.localeCompare(right.cells[column].textContent, undefined, { numeric: true }));
-  if (direction === 'desc') rows.reverse(); rows.forEach(row => body.append(row));
-  table.dataset.sortColumn = String(column); table.dataset.sortDirection = direction;
-}
-function chartDataframe(section) {
-  const existing = section.querySelector('.dataframe-chart'); if (existing) { existing.remove(); return; }
-  const table = section.querySelector('table'); const headers = [...table.tHead.rows[0].cells].slice(1).map(cell => cell.textContent);
-  const rows = [...table.tBodies[0].rows].slice(0, 12).filter(row => !row.hidden);
-  const numericColumn = headers.findIndex((_, index) => rows.some(row => Number.parseFloat(row.cells[index + 1]?.textContent.replace(/[^0-9.-]/g, '')) === Number.parseFloat(row.cells[index + 1]?.textContent.replace(/[^0-9.-]/g, ''))));
-  if (numericColumn < 0 || !rows.length) { setSavedState('No numeric column is available for a quick chart', true); return; }
-  const values = rows.map(row => Number.parseFloat(row.cells[numericColumn + 1].textContent.replace(/[^0-9.-]/g, '')) || 0); const max = Math.max(...values, 1);
-  const categoryColumn = headers.findIndex((_, index) => index !== numericColumn && rows.some(row => row.cells[index + 1]?.textContent));
-  const chart = document.createElement('div'); chart.className = 'dataframe-chart';
-  chart.innerHTML = `<strong>${escapeHTML(headers[numericColumn])}</strong>${rows.map((row, index) => `<div><span title="${escapeHTML(categoryColumn >= 0 ? row.cells[categoryColumn + 1].textContent : String(index + 1))}">${escapeHTML(categoryColumn >= 0 ? row.cells[categoryColumn + 1].textContent : String(index + 1))}</span><i><b style="width:${Math.max(2, values[index] / max * 100)}%"></b></i><em>${escapeHTML(String(values[index]))}</em></div>`).join('')}`;
-  section.append(chart);
-}
 async function createDatasetFromDataframe(cellId) {
   if (!dss.enabled || !projectContext.isDss) { setSavedState('Create datasets is available inside DSS', true); return; }
   const cell = getCell(cellId);
@@ -1998,14 +2011,10 @@ async function createDatasetFromDataframe(cellId) {
     setSavedState(`Created ${datasetName}; run the inserted write cell to populate it`);
   } catch (error) { setSavedState(`Dataset creation failed: ${error.message}`, true); console.warn(error); }
 }
-cellsEl.addEventListener('input', event => { const filter = event.target.closest('.dataframe-filter input'); if (filter) filterDataframe(filter.closest('.dataframe-output'), filter.value); });
 cellsEl.addEventListener('click', event => {
   const copyError = event.target.closest('[data-copy-error]'); if (copyError) { const text = copyError.closest('.error-output')?.querySelector('.error-copy-source')?.value || ''; navigator.clipboard?.writeText(text); setSavedState('Error copied to clipboard'); return; }
-  const header = event.target.closest('[data-sort-column]'); if (header) { sortDataframe(header.closest('table'), Number(header.dataset.sortColumn)); return; }
-  const createDataset = event.target.closest('[data-create-dataset-from-cell]'); if (createDataset) { createDatasetFromDataframe(createDataset.dataset.createDatasetFromCell); return; }
-  const chart = event.target.closest('.chart-dataframe'); if (chart) { chartDataframe(chart.closest('.dataframe-output')); return; }
-  const explore = event.target.closest('.explore-dataframe'); if (explore) { const section = explore.closest('.dataframe-output'); document.querySelector('#dataframe-modal-content').innerHTML = section.outerHTML; document.querySelector('#dataframe-modal').classList.remove('hidden'); }
 });
+document.addEventListener('click', event => { const button = event.target.closest('[data-create-dataset-from-cell]'); if (button) createDatasetFromDataframe(button.dataset.createDatasetFromCell); });
 function revealCell(id) {
   const cell = getCell(id); if (!cell) return;
   const sections = sectionModel(state.cells);
@@ -2031,7 +2040,7 @@ document.querySelector('#cell-minimap')?.addEventListener('click', event => {
   if (event.target.closest('#minimap-first-failed')) { const failed = state.cells.find(cell => cell.type !== 'markdown' && executionState(cell).status === 'failed'); if (failed) revealCell(failed.id); }
 });
 const dataframeModal = document.querySelector('#dataframe-modal');
-const closeDataframeModal = () => dataframeModal?.classList.add('hidden');
+const closeDataframeModal = () => { resultExplorer.dispose(dataframeModal); dataframeModal?.classList.add('hidden'); document.querySelector('#dataframe-modal-content').innerHTML = ''; };
 document.querySelector('#close-dataframe-modal')?.addEventListener('click', closeDataframeModal);
 dataframeModal?.addEventListener('click', event => { if (event.target === dataframeModal) closeDataframeModal(); });
 document.querySelector('#cell-search')?.addEventListener('input', event => {
@@ -2122,6 +2131,7 @@ document.addEventListener('keydown', async event => {
   const mod = event.metaKey || event.ctrlKey;
   if (!activeNotebook()) return;
   if (event.key === 'Escape') { clearPointerDrag(); closeCellMenus(); closeSettings(); closeFolderModal(); closeDataframeModal(); return; }
+  if (event.target.closest?.('.result-explorer')) return;
   if (event.shiftKey && event.key === 'Enter' && !event.isComposing) { if (event.target.closest?.('.cm-editor, [data-ai-question], #global-ai-input')) return; event.preventDefault(); const cell = document.activeElement.closest?.('.cell'); if (cell) await runAndAdvance(cell.dataset.id); return; }
   // A focused CodeMirror editor owns its own undo stack. Let it handle Cmd/Ctrl+Z
   // so the edit is undone in place and the cursor never leaves the cell.

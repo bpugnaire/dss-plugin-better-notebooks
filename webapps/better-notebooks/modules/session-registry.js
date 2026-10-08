@@ -7,7 +7,7 @@ export class SessionRegistry {
     Object.assign(this, { request, socketFactory, socketUrl, onState, onDisconnect, onAutomaticRestart, onReconnectError, clock, startupTimeout }); this.sessions = new Map();
   }
   setState(session, state) { session.state = state; this.onState(session.notebook, state); }
-  async connect(notebook, path, kernelName, { replaceKernel = false } = {}) {
+  async connect(notebook, path, kernelName, { replaceKernel = false, existingOnly = false } = {}) {
     let s = this.sessions.get(notebook);
     if (s?.reconnecting) { await s.reconnecting; s = this.sessions.get(notebook); }
     if (s?.connecting) return s.connecting;
@@ -23,6 +23,7 @@ export class SessionRegistry {
         const existingSessionIds = new Set(sessions.map(item => item.id));
         const existingKernelIds = new Set(sessions.map(item => item.kernel?.id));
         const compatible = sessions.find(item => sessionPath(item) === path.replace(/^\//, '') && item.kernel?.name === kernelName);
+        if (existingOnly && !compatible) throw Object.assign(new Error('No existing kernel snapshot. Reexecute the cell.'), { code: 'UNAVAILABLE' });
         const samePath = replaceKernel ? sessions.find(item => sessionPath(item) === path.replace(/^\//, '')) : null;
         const createSession = () => this.request('api/sessions', { method: 'POST', body: JSON.stringify({ path, type: 'notebook', name: '', kernel: { id: null, name: kernelName } }) });
         let native = compatible || samePath || await createSession();
@@ -200,6 +201,14 @@ export class SessionRegistry {
     if (last) { const [id, request] = last; request.onOutput = onOutput; request.owner = owner; if (owner) s.owners.set(owner, id); }
     return promise;
   }
+  query(s, payload) {
+    if (s.state !== 'idle') return Promise.reject(uncertainError('Kernel is busy or unavailable.'));
+    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    this.setState(s, 'busy');
+    // Fixed helper expression with a base64 JSON argument: user input is never code.
+    return this.send(s, 'execute_request', { code: '', silent: true, store_history: false,
+      user_expressions: { explorer: `_bn_explorer.request("${encoded}")` }, allow_stdin: false, stop_on_error: false }, 'explorer');
+  }
   message(s, message) {
     const type = message.header?.msg_type; const content = message.content || {}; const id = message.parent_header?.msg_id;
     if (type === 'status') {
@@ -223,6 +232,23 @@ export class SessionRegistry {
       if (type === 'kernel_info_reply') r.reply = true;
       if (type === 'status' && content.execution_state === 'idle') r.idle = true;
       if (r.reply && r.idle) this.finish(s, id, {});
+      return;
+    }
+    if (r.kind === 'explorer') {
+      if (type === 'execute_reply') {
+        r.reply = true;
+        const expression = content.user_expressions?.explorer;
+        r.explorer = expression?.data?.['application/json'];
+        if (content.status !== 'ok' || expression?.status !== 'ok' || !r.explorer) {
+          r.explorer = { ok: false, code: 'UNAVAILABLE', error: expression?.evalue || content.evalue || 'Explorer unavailable. Reexecute the cell.' };
+        }
+        if (!r.idle) r.timeout = this.clock.setTimeout(() => {
+          s.pending.delete(id); this.setState(s, 'unknown');
+          r.reject(uncertainError('Explorer reply received without idle confirmation.'));
+        }, 10000);
+      }
+      if (type === 'status' && content.execution_state === 'idle') r.idle = true;
+      if (r.reply && r.idle) this.finish(s, id, r.explorer);
       return;
     }
     if (r.kind !== 'execute') return;

@@ -16,6 +16,9 @@ transport. The frontend has no server credentials in browser storage.
 - The execution queue serializes requests per notebook and cancels pending work
   on interrupt, failure or uncertain completion. Different notebooks can run
   concurrently.
+- The result explorer owns bounded structured descriptors, kernel snapshots and
+  per-result table/chart/profile settings. Its silent queries use the execution
+  queue, with failures contained so they cannot cancel user cells.
 - Document serialization preserves the native nbformat fields and cell IDs.
   Recovery storage is browser-local, scoped to project, webapp and notebook.
 
@@ -55,3 +58,10 @@ Editable source and local modules are bundled into the checked-in webapp
 `app.js` using `pnpm run build:webapp`. `pnpm test` runs local checks only and
 verifies that the shipped bundle matches the source. Browser tests are a
 separate opt-in command; DSS acceptance remains the publication gate.
+
+## Structured results
+
+The embedded Python formatter and explorer lifecycle are described in
+[the result explorer guide](result-explorer.md), including limits and manual DSS
+acceptance with a user-provided million-row dataset. The native HTML fallback is
+a historical preview; complete exploration uses the structured MIME payload.

@@ -294,3 +294,38 @@ test('failed session recreation reports failure without retrying or replaying co
   await assert.rejects(h.registry.replace({},'P/A.ipynb','new-env'),/DKU_EXTRA_ENV/);
   assert.deepEqual(calls,['GET','DELETE','GET','POST']);assert.equal(h.sockets.length,0);assert.equal(h.sent.length,0);
 });
+
+test('explorer queries use encoded JSON, no history, and wait for reply plus idle', async () => {
+  for (const idleFirst of [true, false]) {
+    const h = harness(), n = {}, s = await h.registry.connect(n, 'P/A.ipynb', 'python3');
+    const payload = { op: 'page', filters: [{ value: '"; print("unsafe") # é' }] };
+    let resolved = false;
+    const result = h.registry.query(s, payload).then(r => { resolved = true; return r; });
+    const message = h.sent.at(-1);
+    assert.equal(message.content.code, ''); assert.equal(message.content.silent, true);
+    assert.equal(message.content.store_history, false); assert.equal(message.content.stop_on_error, false);
+    const encoded = message.content.user_expressions.explorer.match(/"([^"]+)"/)[1];
+    assert.deepEqual(JSON.parse(Buffer.from(encoded, 'base64').toString()), payload);
+    const reply = { status: 'ok', user_expressions: { explorer: { status: 'ok', data: { 'application/json': { ok: true, result: { rows: [[123]] } } } } } };
+    h.sockets[0].msg(message, idleFirst ? 'status' : 'execute_reply', idleFirst ? { execution_state: 'idle' } : reply);
+    await turn(); assert.equal(resolved, false);
+    h.sockets[0].msg(message, idleFirst ? 'execute_reply' : 'status', idleFirst ? reply : { execution_state: 'idle' });
+    assert.deepEqual(await result, { ok: true, result: { rows: [[123]] } });
+    assert.equal(s.displays.size, 0); h.registry.invalidate(n);
+  }
+});
+test('query expression errors remain result failures and do not append cell outputs', async () => {
+  const h = harness(), n = {}, s = await h.registry.connect(n, 'P/A.ipynb', 'python3');
+  const result = h.registry.query(s, { op: 'profile' }), message = h.sent.at(-1);
+  h.sockets[0].msg(message, 'execute_reply', { status: 'ok', user_expressions: { explorer: { status: 'error', evalue: 'helper missing' } } });
+  h.sockets[0].msg(message, 'status', { execution_state: 'idle' });
+  assert.equal((await result).code, 'UNAVAILABLE'); assert.equal(s.displays.size, 0); h.registry.invalidate(n);
+});
+test('historical explorer attaches only to an existing compatible kernel', async () => {
+  const present = harness(), notebook = {};
+  await present.registry.connect(notebook, 'P/A.ipynb', 'python3', { existingOnly: true });
+  assert.equal(present.creates, 0); present.registry.invalidate(notebook);
+  const missing = harness({ existing: false });
+  await assert.rejects(missing.registry.connect({}, 'P/A.ipynb', 'python3', { existingOnly: true }), e => e.code === 'UNAVAILABLE');
+  assert.equal(missing.creates, 0); assert.equal(missing.sent.length, 0);
+});
